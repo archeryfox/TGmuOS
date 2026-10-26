@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+  <game>
+    <path>./TGMUOS.sh</path>
+    <name>tgmuos</name>
+    <desc>TDLib-based Telegram client for muOS</desc>
+    <releasedate>20260101T000000</releasedate>
+    <developer>tgmuos</developer>
+    <publisher></publisher>
+    <genre>Tool</genre>
+    <image>./cover.png</image>
+  </game>
+</gameList>

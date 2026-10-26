@@ -1,0 +1,16 @@
+build/
+build-muos/
+telegram.conf
+proxy.conf
+settings.conf
+data/
+lib/
+libexec/sing-box
+
+# host build artifacts
+build-host/
+log.txt
+/tgmuos
+*.backup*
+__pycache__/
+*.pyc

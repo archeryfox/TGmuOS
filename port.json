@@ -1,0 +1,59 @@
+{
+    "version": 4,
+    "name": "tgmuos.zip",
+    "items": [
+        "TGMUOS.sh",
+        "TGMUOS.gptk",
+        "gameinfo.xml",
+        "log.txt",
+        "mux_launch.sh",
+        "tgmuos",
+        "assets/",
+        "res/",
+        "lib/"
+    ],
+    "items_opt": null,
+    "attr": {
+        "title": "tgmuos",
+        "porter": [
+            "kilo"
+        ],
+        "desc": "TDLib Telegram client for muOS with QR sign-in, Russian UI, and scrollable chat history.",
+        "desc_md": null,
+        "inst": "Install the AArch64 TDLib library and configure your Telegram API credentials in telegram.conf.",
+        "inst_md": null,
+        "genres": [
+            "tool"
+        ],
+        "image": {
+            "screenshot": null,
+            "covers": [],
+            "thumbnail": null,
+            "video": null
+        },
+        "rtr": true,
+        "exp": false,
+        "runtime": [],
+        "reqs": [],
+        "arch": [
+            "aarch64"
+        ],
+        "min_glibc": ""
+    },
+    "status": {
+        "source": "local",
+        "md5": "",
+        "status": "Not Installed"
+    },
+    "files": {
+        "port.json": "port.json",
+        "TGMUOS.sh": "TGMUOS.sh",
+        "TGMUOS.gptk": "TGMUOS.gptk",
+        "gameinfo.xml": "gameinfo.xml",
+        "mux_launch.sh": "mux_launch.sh",
+        "tgmuos": "tgmuos",
+        "assets/": "assets/",
+        "res/": "res/",
+        "lib/": "lib/"
+    }
+}
