@@ -101,10 +101,6 @@ static void set_error(const char* message) {
     fprintf(stderr, "TDLib: %s\n", message);
 }
 
-static void log_debug(const char* message) {
-    fprintf(stderr, "TDLib: %s\n", message);
-}
-
 static void set_status(TgState state, const char* status, const char* prompt) {
     client.state = state;
     snprintf(client.status, sizeof(client.status), "%s", status);

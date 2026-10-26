@@ -157,7 +157,8 @@ static void load_subscription_servers(void) {
         if (!end || *end || latency < -1 || latency > 60000) continue;
         int index = subscription_server_count++;
         snprintf(subscription_servers[index].id,
-                 sizeof(subscription_servers[index].id), "%s", id);
+                 sizeof(subscription_servers[index].id), "%.*s",
+                 (int)sizeof(subscription_servers[index].id) - 1, id);
         snprintf(subscription_servers[index].name,
                  sizeof(subscription_servers[index].name), "%.*s",
                  (int)sizeof(subscription_servers[index].name) - 1, ping_end);
