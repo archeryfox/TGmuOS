@@ -917,8 +917,6 @@ static void handle_response(const char* response) {
             return;
         }
         if (client.qr_request_pending) {
-            char message[TG_TEXT_LENGTH];
-            token_string(json_member(0, "message"), message, sizeof(message));
             snprintf(client.error, sizeof(client.error), "%d: %.240s", code, message);
             fprintf(stderr, "TDLib QR request error: %s\n", client.error);
             client.qr_request_pending = 0;
@@ -939,8 +937,6 @@ static void handle_response(const char* response) {
             }
             return;
         }
-        char message[TG_TEXT_LENGTH];
-        token_string(json_member(0, "message"), message, sizeof(message));
         if (request_method) {
             snprintf(client.error, sizeof(client.error), "%s %d: %.180s",
                      request_method, code, message);
