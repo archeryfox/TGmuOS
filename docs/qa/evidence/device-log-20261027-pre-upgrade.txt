@@ -1,0 +1,10 @@
+tgmuos starting
+External keyboards detected: 0
+Opened controller: muOS-Keys
+Framebuffer: 640x480, 32 bpp, stride 2560
+Using font: res/fonts/AdwaitaSans-Regular.ttf
+UI ready; press ESC to quit
+First frame rendered on screen 0
+TDLib: This TDLib version is incompatible; rebuild it for the current API
+TDLib proxy request disableProxy failed: 500: Request aborted
+tgmuos stopped
