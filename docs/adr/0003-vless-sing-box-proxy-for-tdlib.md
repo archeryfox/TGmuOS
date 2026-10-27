@@ -14,11 +14,11 @@ Two startup problems shaped the design:
 
 1. Refreshing the subscription synchronously before the UI added many seconds
    to every cold start.
-2. An early integration sent TDLib requests that did not match the TDLib
-   JSON schema (e.g. flat `setTdlibParameters` without the nested
-   `parameters` object), which the on-device TDLib build answered with
-   `400: Parameters aren't specified`, and responses were not correlated
-   with their requests.
+2. The TDLib JSON shape changed across library versions. The older muOS
+   library expects `setTdlibParameters.parameters`; the rebuilt upstream
+   library expects those fields directly on `setTdlibParameters`. Sending the
+   other shape leaves `api_id` unset and fails initialization. Responses also
+   need to be correlated with their requests.
 
 The subscription URL, node credentials, and the user's Telegram traffic are
 private data; the application partition is exFAT and cannot enforce Unix file
@@ -29,11 +29,14 @@ permissions.
 Use sing-box as the proxy engine and TDLib's built-in proxy support as the
 client side:
 
-- **Import:** `tools/import_vless_subscription.py` fetches the subscription
-  over HTTPS only (redirects to non-HTTPS are rejected), parses VLESS links
-  with TCP+TLS or TCP+Reality transports, measures TCP connect latency per
-  node, sorts nodes by latency, and writes a validated sing-box profile to
+- **Import:** `tools/import_vless_subscription.py` fetches the primary
+  subscription and optional additional HTTPS-only sources (redirects to
+  non-HTTPS are rejected), parses VLESS links with TCP+TLS or TCP+Reality
+  transports, measures TCP connect latency per node, sorts nodes by latency,
+  and writes a validated sing-box profile to
   `/root/.config/tgmuos/sing-box.json` plus a node list to `servers.tsv`.
+  The device-local `manual-sing-box.json` outbound is included as a selectable
+  node and its DNS settings and direct-domain bypass rules are retained.
   sing-box is built for AArch64 from the official v1.14.4 source and carries
   GPL-3.0 obligations on redistribution.
 - **Engine:** the launcher (`tools/run-client.sh`) starts sing-box in SOCKS5
@@ -44,10 +47,12 @@ client side:
   refresh runs in the background. If the cache is missing or fails
   `sing-box check`, a fresh import must succeed before the app starts, and
   there is no direct-connection fallback.
-- **TDLib protocol:** `src/telegram.c` sends `setTdlibParameters` with its
-  fields nested in a `parameters` object, correlates responses with request
-  methods via `@extra`, reports errors per request, and treats proxy
-  acknowledgements (`ok`) separately from data responses.
+- **TDLib protocol:** `src/telegram.c` first sends the current flat
+  `setTdlibParameters` JSON shape. If an older library responds
+  `Parameters aren't specified`, it retries once using the legacy nested
+  `parameters` object. It correlates responses with request methods via
+  `@extra`, reports errors per request, and treats proxy acknowledgements
+  (`ok`) separately from data responses.
 - **Live switching:** toggling the subscription or choosing **Apply
   connection** sends `addProxy` / `disableProxy` to the running TDLib client
   (`tg_apply_subscription()`), so the change takes effect without restarting
@@ -66,9 +71,10 @@ client side:
 - Telegram traffic flows through the selected VLESS node; nothing else on
   the device is routed.
 - A failed or missing subscription blocks startup by design; the launcher
-  refuses to fall back to a direct connection.
-- TDLib schema mismatches surface as informative per-request errors instead
-  of silent stalls or misleading `400`s.
+  refuses to fall back to a direct connection. A valid manual node can still
+  start the proxy when all subscription sources fail.
+- TDLib schema mismatches are handled with one explicit legacy-shape retry;
+  unrelated errors such as an invalid `api_id` are reported without retrying.
 - Changing the VLESS node does not reconfigure sing-box until the next
   profile refresh (restart or background update), which may surprise users.
 
@@ -81,7 +87,9 @@ client side:
    with a missing/invalid cache fails closed (no direct connection).
 4. Toggling the subscription and **Apply connection** changes TDLib's active
    proxy without restarting the app, and the preference survives restart.
-5. No subscription URL, UUID, or node detail appears in source, packages, or
+5. Each subscription source is imported independently, while the manual node
+   remains selectable even if every remote source fails.
+6. No subscription URL, UUID, or node detail appears in source, packages, or
    log output.
 
 ## Related

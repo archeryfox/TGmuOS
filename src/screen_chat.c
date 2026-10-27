@@ -36,7 +36,7 @@ static const char* const SYMBOL_ROWS[3][11] = {
 };
 static const int SYMBOL_ROW_COUNTS[3] = {11, 11, 11};
 #define KEYBOARD_ROWS 3
-#define SERVICE_KEY_COUNT 5
+#define SERVICE_KEY_COUNT 6
 
 static const SDL_Color COLOR_BG = {20, 25, 33, 255};
 static const SDL_Color COLOR_HEADER = {29, 39, 53, 255};
@@ -88,7 +88,7 @@ static KeyLayout current_layout(int symbols, int russian, int uppercase) {
 }
 
 static int key_count_for(const ScreenChat* screen) {
-    return current_layout(screen->symbols, preferences_is_russian(),
+    return current_layout(screen->symbols, screen->russian_keyboard,
                           screen->uppercase).total + SERVICE_KEY_COUNT;
 }
 
@@ -118,7 +118,7 @@ static int key_index_at(const KeyLayout* layout, int row, int column) {
 
 /* Move selection by keyboard direction; rows have different lengths. */
 static void move_key_selection(ScreenChat* screen, int direction) {
-    KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+    KeyLayout layout = current_layout(screen->symbols, screen->russian_keyboard,
                                       screen->uppercase);
     if (screen->selected_key < 0 || screen->selected_key >= key_count_for(screen)) {
         screen->selected_key = 0;
@@ -146,7 +146,7 @@ static void move_key_selection(ScreenChat* screen, int direction) {
 }
 
 static int service_key_index(const ScreenChat* screen) {
-    return current_layout(screen->symbols, preferences_is_russian(),
+    return current_layout(screen->symbols, screen->russian_keyboard,
                           screen->uppercase).total;
 }
 
@@ -174,7 +174,7 @@ static const char* key_label(ScreenChat* screen, const KeyLayout* layout,
     int row, column;
     key_position(index, layout, &row, &column);
     const char* label = layout->rows[row][column];
-    if (!screen->symbols && !preferences_is_russian() && screen->uppercase &&
+    if (!screen->symbols && !screen->russian_keyboard && screen->uppercase &&
             label[0] && label[1] == '\0' && label[0] >= 'a' && label[0] <= 'z') {
         snprintf(buffer, capacity, "%c", label[0] - 'a' + 'A');
         return buffer;
@@ -183,7 +183,7 @@ static const char* key_label(ScreenChat* screen, const KeyLayout* layout,
 }
 
 static void activate_key(ScreenChat* screen) {
-    KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+    KeyLayout layout = current_layout(screen->symbols, screen->russian_keyboard,
                                       screen->uppercase);
     int letters = layout.total;
     int service = service_key_index(screen);
@@ -198,8 +198,11 @@ static void activate_key(ScreenChat* screen) {
     } else if (screen->selected_key == service + 2) {
         screen->symbols = !screen->symbols;
     } else if (screen->selected_key == service + 3) {
-        screen->keyboard_visible = 0;
+        screen->russian_keyboard = !screen->russian_keyboard;
+        screen->selected_key = service_key_index(screen) + 3;
     } else if (screen->selected_key == service + 4) {
+        screen->keyboard_visible = 0;
+    } else if (screen->selected_key == service + 5) {
         send_draft(screen);
     }
 }
@@ -544,8 +547,17 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
     ScreenChat* screen = (ScreenChat*)self;
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);
     ui_round_rect(renderer, (SDL_Rect){0, 0, 640, 54}, 0, COLOR_HEADER);
-    ui_text(renderer, tg_selected_chat_title(), 18, 7, 18, COLOR_TEXT);
-    ui_text(renderer, tr("TELEGRAM", "ТЕЛЕГРАМ"), 18, 31, 14, COLOR_MUTED);
+    /* Avatar in the header when the chat photo is available. */
+    if (tg_selected_chat_has_photo()) {
+        SDL_Surface* surface = images_get(tg_selected_chat_photo_path());
+        if (surface) {
+            ui_blit_surface(renderer, surface, 10, 8, 38, 38);
+        }
+    } else {
+        ui_round_rect(renderer, (SDL_Rect){10, 8, 38, 38}, 19, COLOR_BLUE);
+    }
+    ui_text(renderer, tg_selected_chat_title(), 60, 7, 18, COLOR_TEXT);
+    ui_text(renderer, tr("TELEGRAM", "ТЕЛЕГРАМ"), 60, 31, 14, COLOR_MUTED);
 
     int message_count = tg_message_count();
     int viewport_bottom = screen->keyboard_visible ? 205 : 380;
@@ -622,7 +634,7 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
 
     if (screen->keyboard_visible) {
         if (screen->selected_key >= key_count_for(screen)) screen->selected_key = 0;
-        KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+        KeyLayout layout = current_layout(screen->symbols, screen->russian_keyboard,
                                           screen->uppercase);
         int selected = screen->selected_key;
         int index = 0;
@@ -647,14 +659,15 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
             }
         }
         /* Service row: wider keys, centered labels. */
-        static const int service_widths[SERVICE_KEY_COUNT] = {150, 80, 80, 116, 130};
-        int russian = preferences_is_russian();
+        static const int service_widths[SERVICE_KEY_COUNT] = {110, 66, 66, 82, 92, 90};
+        int keyboard_russian = screen->russian_keyboard;
         const char* labels[SERVICE_KEY_COUNT] = {
-            russian ? "ПРОБЕЛ" : "SPACE",
-            russian ? "УДЛ" : "DEL",
-            screen->symbols ? (russian ? "АБВ" : "ABC") : "123",
-            russian ? "СКРЫТЬ" : "HIDE",
-            russian ? "ОТПР" : "SEND",
+            keyboard_russian ? "ПРОБЕЛ" : "SPACE",
+            keyboard_russian ? "УДЛ" : "DEL",
+            screen->symbols ? "ABC" : "123",
+            "EN/РУС",
+            keyboard_russian ? "СКРЫТЬ" : "HIDE",
+            keyboard_russian ? "ОТПР" : "SEND",
         };
         int gap = 6;
         int total_width = 0;
@@ -702,6 +715,7 @@ ScreenChat* screen_chat_create(void) {
     screen->selected_key = 0;
     screen->uppercase = 0;
     screen->symbols = 0;
+    screen->russian_keyboard = 1;
     screen->keyboard_visible = 1;
     return screen;
 }

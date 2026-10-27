@@ -11,6 +11,7 @@ typedef struct {
     int selected_key;
     int uppercase;
     int symbols;
+    int russian_keyboard;
     int keyboard_visible;
     int scroll_target;
     float scroll_position;

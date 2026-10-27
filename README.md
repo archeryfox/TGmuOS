@@ -69,8 +69,11 @@ password if enabled. The login screen also offers QR authorization; scan it
 from Telegram on another device. The login code is requested through Telegram's
 normal authorization flow; never share it with anyone.
 
-On muOS, the Settings menu can enable or disable the installed VLESS
-subscription. Its URL and imported node details are stored in
+On muOS, the Settings menu can enable or disable the VLESS proxy. The primary
+subscription stays in `subscription.conf`; extra HTTPS subscription URLs are
+kept one per line in the private `subscription-sources.txt`. The importer also
+adds the private manual VLESS profile as a selectable server and keeps its DNS
+and direct-domain bypass rules. URLs and imported node details stay in
 `/root/.config/tgmuos/` with private permissions. The bundled sing-box engine
 creates a local SOCKS5 connection for TDLib; it carries Telegram-client traffic
 only, not traffic from other applications. The cached tunnel starts before
@@ -90,10 +93,11 @@ list, press **X** to re-measure latency for every node (TCP connect ping,
 privately. Node addresses are stored next to the list so the app can ping
 without a subscription refresh.
 
-The supplied subscription is installed as the device-local default, not in
+Subscription URLs and node credentials are installed on the device, not in
 the source tree. The importer accepts VLESS links using TCP with TLS or
 Reality; sing-box periodically tests supported nodes against Telegram and
-automatically selects a responsive one. sing-box v1.14.4 is built for AArch64 from the
+automatically selects a responsive node when the server list is set to
+**Automatic**. sing-box v1.14.4 is built for AArch64 from the
 [official source](https://github.com/SagerNet/sing-box/tree/v1.14.4); retain
 its GPL-3.0 license and source availability when redistributing the binary.
 
@@ -114,9 +118,11 @@ muOS resources with `muvpn/package.sh`; place the AArch64 sing-box binary at
 `muvpn/libexec/sing-box` before packaging. Do not include subscription URLs,
 UUIDs, or node configuration in the application package.
 
-The interface starts in Russian. Change the language and toggle animations in
-Settings; both preferences are saved in the private `settings.conf` file. The
-chat keyboard supports Russian and English layouts, and X hides or restores it.
+The interface starts in Russian. Change interface language and toggle
+animations in Settings; both preferences are saved in the private
+`settings.conf` file. The chat and login keyboards each have a local RU/EN
+layout toggle, independent of the interface language. A physical keyboard can
+switch its own layout with Ctrl+Space. X hides or restores the chat keyboard.
 Use D-pad up/down or page keys to scroll message history; older messages load
 as you reach the beginning of the conversation.
 

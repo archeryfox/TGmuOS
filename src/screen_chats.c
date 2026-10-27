@@ -4,6 +4,7 @@
 #include "statusbar.h"
 #include "telegram.h"
 #include "ui.h"
+#include "images.h"
 
 #include <SDL2/SDL.h>
 
@@ -18,6 +19,29 @@ static const SDL_Color COLOR_SELECTED = {44, 74, 105, 255};
 static const SDL_Color COLOR_TEXT = {238, 241, 247, 255};
 static const SDL_Color COLOR_MUTED = {156, 168, 185, 255};
 static const SDL_Color COLOR_BLUE = {46, 140, 220, 255};
+static const SDL_Color COLOR_ARCHIVE = {88, 88, 96, 255};
+
+static void draw_avatar(ScreenChats* screen, AppRenderer* renderer, int index, int y) {
+    const TgChat* chat = tg_chat_at(index);
+    if (!chat) return;
+    int x = 24;
+    int size = 36;
+    if (tg_chat_has_photo(index)) {
+        SDL_Surface* surface = images_get(tg_chat_photo_path(index));
+        if (surface) {
+            ui_blit_surface(renderer, surface, x, y + 12, size, size);
+            return;
+        }
+    }
+    /* Fallback: first letter of the title on a coloured circle. */
+    ui_round_rect(renderer, (SDL_Rect){x, y + 12, size, size}, size / 2,
+                  index == screen->selected ? COLOR_BLUE : COLOR_HEADER);
+    char initial[2] = {0};
+    if (chat->title[0]) {
+        initial[0] = chat->title[0];
+    }
+    ui_text(renderer, initial, x + size / 2 - 4, y + 12 + size / 2 - 8, 16, COLOR_TEXT);
+}
 
 static void chats_handle(Screen* self, const SDL_Event* event) {
     ScreenChats* screen = (ScreenChats*)self;
@@ -100,18 +124,21 @@ static void chats_render(Screen* self, AppRenderer* renderer) {
         tab_x += tab_width + 6;
     }
 
-    for (int row = 0; row < VISIBLE_CHATS; ++row) {
+for (int row = 0; row < VISIBLE_CHATS; ++row) {
         int index = screen->scroll + row;
         const TgChat* chat = tg_chat_at(index);
         if (!chat) break;
 
         int y = 88 + row * 68;
         ui_round_rect(renderer, (SDL_Rect){12, y, 616, 60}, 15,
-                      index == screen->selected ? COLOR_SELECTED : COLOR_ROW);
-        ui_round_rect(renderer, (SDL_Rect){24, y + 12, 36, 36}, 12,
-                      index == screen->selected ? COLOR_BLUE : COLOR_HEADER);
-        ui_text(renderer, chat->title, 76, y + 7, 18, COLOR_TEXT);
+                       index == screen->selected ? COLOR_SELECTED : COLOR_ROW);
+        draw_avatar(screen, renderer, index, y);
+        ui_text(renderer, chat->title, 76, y + 7, 18,
+                chat->archived ? COLOR_ARCHIVE : COLOR_TEXT);
         ui_text(renderer, chat->preview, 76, y + 33, 14, COLOR_MUTED);
+        if (chat->archived) {
+            ui_text(renderer, tr("ARCHIVE", "АРХИВ"), 540, y + 33, 12, COLOR_ARCHIVE);
+        }
     }
     if (tg_chat_count() == 0) {
         ui_text(renderer, tr("Loading Telegram chats…", "Загрузка чатов Telegram…"),

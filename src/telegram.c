@@ -53,6 +53,7 @@ static struct {
     int proxy_setup_pending;
     int proxy_apply_pending;
     int awaiting_initial_proxy;
+    int tdlib_parameters_nested;
     char proxy_server[PREFERENCES_PROXY_SERVER_LENGTH];
     int proxy_port;
     char proxy_username[PREFERENCES_PROXY_CREDENTIAL_LENGTH];
@@ -86,7 +87,11 @@ static struct {
     int folder_count;
     int current_folder;
     uint32_t last_photo_request_ms;
+    uint32_t last_chat_refresh_ms;
     int close_intent; /* 0 none, 1 archive cache, 2 restore saved account */
+    int me_photo_file_id;
+    int me_photo_pending;
+    char me_photo_path[256];
 } client;
 
 static const char* json_source;
@@ -831,6 +836,8 @@ static void request_chats(void) {
                  "\"chat_folder_id\":%d},\"limit\":50}",
                  client.folders[client.current_folder - 1].id);
     } else {
+        /* Main list: never pull archived chats into the visible list — they
+         * stay in the archive until the user explicitly opens them. */
         snprintf(request, sizeof(request),
                  "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListMain\"},\"limit\":50}");
     }
@@ -918,31 +925,59 @@ static void extract_photo(int content, TgMessage* message) {
     }
 }
 
+static void send_tdlib_parameters(void) {
+    char request[1024];
+    char encoded_database_key[128];
+    if (!base64_encode((const unsigned char*)client.database_key,
+                       strlen(client.database_key), encoded_database_key,
+                       sizeof(encoded_database_key))) {
+        set_error("Cannot encode local database key");
+        return;
+    }
+    if (client.tdlib_parameters_nested) {
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"setTdlibParameters\",\"parameters\":{"
+                 "\"@type\":\"tdlibParameters\",\"use_test_dc\":false,"
+                 "\"database_directory\":\"data/tdlib\","
+                 "\"files_directory\":\"data/tdlib/files\","
+                 "\"database_encryption_key\":\"%s\","
+                 "\"use_message_database\":true,\"use_file_database\":true,"
+                 "\"use_chat_info_database\":true,\"use_secret_chats\":false,"
+                 "\"api_id\":%d,\"api_hash\":\"%s\","
+                 "\"system_language_code\":\"%s\","
+                 "\"device_model\":\"muOS handheld\","
+                 "\"system_version\":\"Linux\","
+                 "\"application_version\":\"tgmuos\"}}",
+                 encoded_database_key, client.api_id, client.api_hash,
+                 preferences_is_russian() ? "ru" : "en");
+    } else {
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"setTdlibParameters\","
+                 "\"use_test_dc\":false,"
+                 "\"database_directory\":\"data/tdlib\","
+                 "\"files_directory\":\"data/tdlib/files\","
+                 "\"database_encryption_key\":\"%s\","
+                 "\"use_message_database\":true,\"use_file_database\":true,"
+                 "\"use_chat_info_database\":true,\"use_secret_chats\":false,"
+                 "\"api_id\":%d,\"api_hash\":\"%s\","
+                 "\"system_language_code\":\"%s\","
+                 "\"device_model\":\"muOS handheld\","
+                 "\"system_version\":\"Linux\","
+                 "\"application_version\":\"tgmuos\"}",
+                 encoded_database_key, client.api_id, client.api_hash,
+                 preferences_is_russian() ? "ru" : "en");
+    }
+    fprintf(stderr, "TDLib: sending setTdlibParameters using %s JSON schema\n",
+            client.tdlib_parameters_nested ? "legacy nested" : "flat");
+    send_request(request);
+}
+
 static void handle_authorization(const char* state) {
     client.pending_auth_state = TgStateUnavailable;
     client.error[0] = '\0';
     client.qr_request_pending = 0;
     if (strcmp(state, "authorizationStateWaitTdlibParameters") == 0) {
-        char request[1024];
-        char encoded_database_key[128];
-        if (!base64_encode((const unsigned char*)client.database_key,
-                           strlen(client.database_key), encoded_database_key,
-                           sizeof(encoded_database_key))) {
-            set_error("Cannot encode local database key");
-            return;
-        }
-        snprintf(request, sizeof(request),
-                 "{\"@type\":\"setTdlibParameters\",\"parameters\":{"
-                 "\"@type\":\"tdlibParameters\",\"use_test_dc\":false,"
-                 "\"database_directory\":\"data/tdlib\",\"files_directory\":\"data/tdlib/files\","
-                 "\"database_encryption_key\":\"%s\",\"use_message_database\":true,"
-                 "\"use_file_database\":true,\"use_chat_info_database\":true,"
-                 "\"use_secret_chats\":false,\"api_id\":%d,\"api_hash\":\"%s\","
-                 "\"system_language_code\":\"%s\",\"device_model\":\"muOS handheld\","
-                 "\"system_version\":\"Linux\",\"application_version\":\"tgmuos\"}}",
-                 encoded_database_key, client.api_id, client.api_hash,
-                 preferences_is_russian() ? "ru" : "en");
-        send_request(request);
+        send_tdlib_parameters();
         set_status(TgStateInitializing, "Initializing Telegram database…", "");
     } else if (strcmp(state, "authorizationStateWaitEncryptionKey") == 0) {
         char request[1024];
@@ -1020,14 +1055,55 @@ static void update_chat(int object) {
     int index = 0;
     while (index < client.chat_count && client.chats[index].id != id) ++index;
     if (index == client.chat_count) {
+        /* Archived chats are hidden from the main list — they only appear
+         * when the user explicitly opens them by id. */
+        int lists = json_member(object, "chat_lists");
+        int in_archive = 0;
+        for (int i = 0; i < json_array_size(lists); ++i) {
+            int list = json_array_item(lists, i);
+            char list_name[32];
+            token_string(json_member(list, "@type"), list_name, sizeof(list_name));
+            if (strcmp(list_name, "chatListArchive") == 0) {
+                in_archive = 1;
+                break;
+            }
+        }
+        if (in_archive && client.current_folder == 0) return;
         if (client.chat_count >= TG_MAX_CHATS) return;
         ++client.chat_count;
     }
     TgChat* chat = &client.chats[index];
     chat->id = id;
+    chat->archived = 0;
+    int lists = json_member(object, "chat_lists");
+    for (int i = 0; i < json_array_size(lists); ++i) {
+        int list = json_array_item(lists, i);
+        char list_name[32];
+        token_string(json_member(list, "@type"), list_name, sizeof(list_name));
+        if (strcmp(list_name, "chatListArchive") == 0) {
+            chat->archived = 1;
+            break;
+        }
+    }
     token_string(json_member(object, "title"), chat->title, sizeof(chat->title));
     extract_content_text(json_member(json_member(object, "last_message"), "content"),
                          chat->preview, sizeof(chat->preview));
+    /* Request the chat photo if the chat has one and we haven't cached it yet. */
+    int photo = json_member(object, "photo");
+    if (photo >= 0) {
+        int small = json_member(photo, "small");
+        int file_id = (int)token_integer(json_member(small, "id"));
+        if (file_id && !chat->photo_pending) {
+            char request[160];
+            snprintf(request, sizeof(request),
+                     "{\"@type\":\"downloadFile\",\"file_id\":%d,"
+                     "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
+                     file_id);
+            send_request(request);
+            chat->photo_file_id = file_id;
+            chat->photo_pending = 1;
+        }
+    }
 }
 
 static void reset_message_media(TgMessage* message) {
@@ -1049,8 +1125,20 @@ static void fill_message(TgMessage* message, int object) {
 
 static void update_message(int object) {
     int64_t chat_id = token_integer(json_member(object, "chat_id"));
-    if (!chat_id || chat_id != client.selected_chat) return;
     int64_t id = token_integer(json_member(object, "id"));
+    int content = json_member(object, "content");
+    /* Refresh the chat preview even for chats that are not currently open,
+     * so the chat list stays live while the user scrolls. */
+    if (chat_id) {
+        for (int i = 0; i < client.chat_count; ++i) {
+            if (client.chats[i].id == chat_id) {
+                extract_content_text(content, client.chats[i].preview,
+                                     sizeof(client.chats[i].preview));
+                break;
+            }
+        }
+    }
+    if (!chat_id || chat_id != client.selected_chat) return;
     for (int i = 0; i < client.message_count; ++i) {
         if (client.messages[i].id == id) return;
     }
@@ -1122,14 +1210,6 @@ static void handle_response(const char* response) {
         int64_t id = token_integer(json_member(0, "chat_id"));
         for (int i = 0; i < client.chat_count; ++i) {
             if (client.chats[i].id == id) {
-                token_string(json_member(0, "title"), client.chats[i].title,
-                             sizeof(client.chats[i].title));
-            }
-        }
-    } else if (strcmp(type_name, "updateChatLastMessage") == 0) {
-        int64_t id = token_integer(json_member(0, "chat_id"));
-        for (int i = 0; i < client.chat_count; ++i) {
-            if (client.chats[i].id == id) {
                 int content = json_member(json_member(0, "last_message"), "content");
                 int text = json_member(content, "text");
                 token_string(json_member(text, "text"), client.chats[i].preview,
@@ -1138,6 +1218,40 @@ static void handle_response(const char* response) {
         }
     } else if (strcmp(type_name, "updateNewMessage") == 0) {
         update_message(json_member(0, "message"));
+    } else if (strcmp(type_name, "updateUser") == 0) {
+        int user = json_member(0, "user");
+        int photo = json_member(user, "photo");
+        if (photo >= 0) {
+            int small = json_member(photo, "small");
+            int file_id = (int)token_integer(json_member(small, "id"));
+            if (file_id && !client.me_photo_pending) {
+                char request[160];
+                snprintf(request, sizeof(request),
+                         "{\"@type\":\"downloadFile\",\"file_id\":%d,"
+                         "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
+                         file_id);
+                send_request(request);
+                client.me_photo_file_id = file_id;
+                client.me_photo_pending = 1;
+            }
+        }
+    } else if (strcmp(type_name, "updateUserPhoto") == 0) {
+        int user = json_member(0, "user");
+        int photo = json_member(user, "photo");
+        if (photo >= 0) {
+            int small = json_member(photo, "small");
+            int file_id = (int)token_integer(json_member(small, "id"));
+            if (file_id && !client.me_photo_pending) {
+                char request[160];
+                snprintf(request, sizeof(request),
+                         "{\"@type\":\"downloadFile\",\"file_id\":%d,"
+                         "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
+                         file_id);
+                send_request(request);
+                client.me_photo_file_id = file_id;
+                client.me_photo_pending = 1;
+            }
+        }
     } else if (strcmp(type_name, "chats") == 0) {
         int chats = json_member(0, "chat_ids");
         int count = json_array_size(chats);
@@ -1222,11 +1336,39 @@ static void handle_response(const char* response) {
                     }
                 }
             }
+            for (int i = 0; i < client.chat_count; ++i) {
+                if (client.chats[i].photo_file_id == file_id) {
+                    client.chats[i].photo_pending = 0;
+                    if (done) {
+                        token_string(json_member(local, "path"),
+                                     client.chats[i].photo_path,
+                                     sizeof(client.chats[i].photo_path));
+                    }
+                }
+            }
+            if (client.me_photo_file_id == file_id) {
+                client.me_photo_pending = 0;
+                if (done) {
+                    token_string(json_member(local, "path"),
+                                 client.me_photo_path,
+                                 sizeof(client.me_photo_path));
+                }
+            }
         }
     } else if (strcmp(type_name, "error") == 0) {
         int code = (int)token_integer(json_member(0, "code"));
         char message[TG_TEXT_LENGTH];
         token_string(json_member(0, "message"), message, sizeof(message));
+        if (request_method && code == 400 &&
+                strcmp(request_method, "setTdlibParameters") == 0 &&
+                !client.tdlib_parameters_nested &&
+                strstr(message, "Parameters aren't specified")) {
+            client.tdlib_parameters_nested = 1;
+            fprintf(stderr,
+                    "TDLib: retrying setTdlibParameters with legacy nested JSON schema\n");
+            send_tdlib_parameters();
+            return;
+        }
         if (client.proxy_setup_pending || client.proxy_apply_pending ||
             client.awaiting_initial_proxy) {
             fprintf(stderr, "TDLib proxy request %s failed: %d: %s\n",
@@ -1312,6 +1454,20 @@ static void pump_photo_downloads(void) {
     }
 }
 
+/* Periodically ask TDLib for new chats so the list refreshes even when no
+ * updateNewChat update arrives (for example after app restart or while the
+ * user is scrolling). Throttled to ~3 s. */
+static void pump_chat_refresh(void) {
+    if (!client.running || client.state != TgStateReady) return;
+    uint32_t now = SDL_GetTicks();
+    if (client.last_chat_refresh_ms &&
+            now - client.last_chat_refresh_ms < 3000) {
+        return;
+    }
+    client.last_chat_refresh_ms = now;
+    request_chats();
+}
+
 void tg_poll(void) {
     if (!client.running || !client.receive) return;
     for (int i = 0; i < 8; ++i) {
@@ -1320,6 +1476,7 @@ void tg_poll(void) {
         handle_response(response);
     }
     pump_photo_downloads();
+    pump_chat_refresh();
 }
 
 void tg_stop(void) {
@@ -1382,10 +1539,8 @@ int tg_json_self_test(void) {
     handle_authorization("authorizationStateWaitTdlibParameters");
     if (!json_parse(self_test_request)) return 0;
     int parameters = json_member(0, "parameters");
-    if (parameters < 0 ||
-        !token_equals(json_member(parameters, "@type"), "tdlibParameters") ||
-        json_member(parameters, "api_id") < 0 ||
-        json_member(parameters, "api_hash") < 0) return 0;
+    if (parameters >= 0 || json_member(0, "api_id") < 0 ||
+        json_member(0, "api_hash") < 0) return 0;
 
     send_request("{\"@type\":\"getProxies\"}");
     if (!json_parse(self_test_request)) return 0;
@@ -1503,6 +1658,34 @@ const TgChat* tg_chat_at(int index) {
     return index >= 0 && index < client.chat_count ? &client.chats[index] : NULL;
 }
 
+int tg_chat_has_photo(int index) {
+    const TgChat* chat = tg_chat_at(index);
+    return chat && chat->photo_path[0];
+}
+
+const char* tg_chat_photo_path(int index) {
+    const TgChat* chat = tg_chat_at(index);
+    return chat ? chat->photo_path : NULL;
+}
+
+int tg_selected_chat_has_photo(void) {
+    for (int i = 0; i < client.chat_count; ++i) {
+        if (client.chats[i].id == client.selected_chat) {
+            return client.chats[i].photo_path[0];
+        }
+    }
+    return 0;
+}
+
+const char* tg_selected_chat_photo_path(void) {
+    for (int i = 0; i < client.chat_count; ++i) {
+        if (client.chats[i].id == client.selected_chat) {
+            return client.chats[i].photo_path;
+        }
+    }
+    return NULL;
+}
+
 int tg_folder_count(void) {
     return client.folder_count;
 }
@@ -1549,19 +1732,34 @@ const TgMessage* tg_message_at(int index) {
     return index >= 0 && index < client.message_count ? &client.messages[index] : NULL;
 }
 
-void tg_select_chat(int index) {
-    const TgChat* chat = tg_chat_at(index);
-    if (!chat || client.state != TgStateReady || client.selected_chat == chat->id) return;
-    client.selected_chat = chat->id;
+static void tg_open_chat(int64_t chat_id) {
+    if (!client.running || client.state != TgStateReady) return;
+    client.selected_chat = chat_id;
     client.message_count = 0;
     client.older_history_pending = 0;
     client.older_history_exhausted = 0;
-    char request[192];
+    char request[256];
     snprintf(request, sizeof(request),
              "{\"@type\":\"getChatHistory\",\"chat_id\":%lld,\"from_message_id\":0,"
-             "\"offset\":0,\"limit\":30,\"only_local\":false,\"@extra\":\"load_messages\"}",
-             (long long)chat->id);
+             "\"offset\":0,\"limit\":50,\"only_local\":true,\"@extra\":\"load_messages\"}",
+             (long long)chat_id);
     send_request(request);
+    snprintf(request, sizeof(request),
+             "{\"@type\":\"getChatHistory\",\"chat_id\":%lld,\"from_message_id\":0,"
+             "\"offset\":0,\"limit\":50,\"only_local\":false,\"@extra\":\"load_messages\"}",
+             (long long)chat_id);
+    send_request(request);
+}
+
+void tg_select_chat(int index) {
+    const TgChat* chat = tg_chat_at(index);
+    if (!chat || client.state != TgStateReady || client.selected_chat == chat->id) return;
+    tg_open_chat(chat->id);
+}
+
+void tg_open_archived_chat(int64_t chat_id) {
+    if (!client.running || client.state != TgStateReady) return;
+    tg_open_chat(chat_id);
 }
 
 void tg_load_older_messages(void) {

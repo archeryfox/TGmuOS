@@ -2,6 +2,7 @@
 
 import base64
 import concurrent.futures
+import copy
 import hashlib
 import json
 import os
@@ -16,6 +17,14 @@ CONFIG_DIR = os.environ.get("TGMUOS_CONFIG_DIR", "/root/.config/tgmuos")
 SUBSCRIPTION_FILE = os.environ.get(
     "TGMUOS_SUBSCRIPTION_CONFIG",
     os.path.join(CONFIG_DIR, "subscription.conf"),
+)
+SUBSCRIPTION_SOURCES_FILE = os.environ.get(
+    "TGMUOS_SUBSCRIPTION_SOURCES",
+    os.path.join(CONFIG_DIR, "subscription-sources.txt"),
+)
+MANUAL_PROFILE = os.environ.get(
+    "TGMUOS_MANUAL_PROFILE",
+    os.path.join(CONFIG_DIR, "manual-sing-box.json"),
 )
 SINGBOX_CONFIG = os.path.join(CONFIG_DIR, "sing-box.json")
 SERVER_LIST = os.environ.get(
@@ -35,17 +44,68 @@ class HTTPSOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
         )
 
 
-def read_subscription_url():
-    with open(SUBSCRIPTION_FILE, encoding="utf-8") as config:
-        for line in config:
-            key, separator, value = line.rstrip("\r\n").partition("=")
-            if separator and key == "url":
-                url = value.strip()
-                parsed = urllib.parse.urlsplit(url)
-                if parsed.scheme != "https" or not parsed.hostname:
-                    raise ValueError("subscription URL must use HTTPS")
-                return url
-    raise ValueError("subscription URL is missing")
+def read_subscription_urls():
+    urls = []
+
+    def add_url(value):
+        url = value.strip()
+        if not url or url.startswith("#"):
+            return
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise ValueError("subscription URL must use HTTPS")
+        if url not in urls:
+            urls.append(url)
+
+    try:
+        with open(SUBSCRIPTION_FILE, encoding="utf-8") as config:
+            for line in config:
+                key, separator, value = line.rstrip("\r\n").partition("=")
+                if separator and key == "url":
+                    add_url(value)
+    except FileNotFoundError:
+        pass
+
+    try:
+        with open(SUBSCRIPTION_SOURCES_FILE, encoding="utf-8") as sources:
+            for line in sources:
+                add_url(line.rstrip("\r\n"))
+    except FileNotFoundError:
+        pass
+    return urls
+
+
+def read_manual_profile():
+    try:
+        with open(MANUAL_PROFILE, encoding="utf-8") as profile:
+            return json.load(profile)
+    except FileNotFoundError:
+        return {}
+
+
+def read_manual_nodes(profile):
+    nodes = []
+    for source in profile.get("outbounds", []):
+        if source.get("type") != "vless":
+            continue
+        node = copy.deepcopy({
+            key: value for key, value in source.items()
+            if key not in ("_id", "_name")
+        })
+        if (not node.get("server") or not node.get("server_port") or
+                not node.get("uuid")):
+            continue
+        stable_data = json.dumps(
+            {key: value for key, value in node.items() if key != "tag"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        server_id = hashlib.sha256(stable_data).hexdigest()[:16]
+        node["tag"] = "node-" + server_id
+        node["_id"] = server_id
+        node["_name"] = "🇫🇲 Для Telegram"
+        nodes.append(node)
+    return nodes
 
 
 def read_subscription(url):
@@ -198,16 +258,30 @@ def write_server_list(servers):
     os.chmod(SERVER_LIST, 0o600)
 
 
-def build_config(uris, selected_id="", tun_mode=False):
+def build_config(uris, selected_id="", tun_mode=False,
+                 manual_profile=None):
     outbounds = []
     errors = 0
+    seen_tags = set()
     for line in uris:
         try:
-            outbounds.append(parse_vless(line, len(outbounds) + 1))
+            outbound = parse_vless(line, len(outbounds) + 1)
         except (ValueError, UnicodeError):
             errors += 1
+            continue
+        if outbound["tag"] in seen_tags:
+            errors += 1
+            continue
+        seen_tags.add(outbound["tag"])
+        outbounds.append(outbound)
+    manual_profile = manual_profile or {}
+    for outbound in read_manual_nodes(manual_profile):
+        if outbound["tag"] in seen_tags:
+            continue
+        seen_tags.add(outbound["tag"])
+        outbounds.append(outbound)
     if not outbounds:
-        raise ValueError("subscription contains no supported VLESS nodes")
+        raise ValueError("no supported VLESS nodes or manual profile")
     selected_tag = next(
         (item["tag"] for item in outbounds if item["_id"] == selected_id), None
     )
@@ -226,6 +300,12 @@ def build_config(uris, selected_id="", tun_mode=False):
         "interrupt_exist_connections": True,
     })
     outbounds.append({"type": "direct", "tag": "direct"})
+    manual_route = manual_profile.get("route", {})
+    direct_rules = [
+        copy.deepcopy(rule)
+        for rule in manual_route.get("rules", [])
+        if rule.get("outbound") == "direct"
+    ]
     if tun_mode:
         for item in outbounds:
             item["domain_resolver"] = "bootstrap"
@@ -252,7 +332,7 @@ def build_config(uris, selected_id="", tun_mode=False):
             ],
             "final": "remote",
         }
-        route_rules = [{"protocol": "dns", "action": "hijack-dns"}]
+        route_rules = direct_rules + [{"protocol": "dns", "action": "hijack-dns"}]
     else:
         inbound = {
             "type": "socks",
@@ -260,8 +340,8 @@ def build_config(uris, selected_id="", tun_mode=False):
             "listen": "127.0.0.1",
             "listen_port": 10808,
         }
-        dns = None
-        route_rules = []
+        dns = copy.deepcopy(manual_profile.get("dns"))
+        route_rules = direct_rules
 
     config = {
         "log": {"level": "warn", "timestamp": True},
@@ -270,12 +350,15 @@ def build_config(uris, selected_id="", tun_mode=False):
         "route": {
             "rules": route_rules,
             "final": selected_tag or "proxy",
-            "default_domain_resolver": "bootstrap" if tun_mode else "",
-            "auto_detect_interface": True,
+            "auto_detect_interface": False,
         },
     }
-    if not tun_mode:
-        config["route"].pop("default_domain_resolver")
+    if tun_mode:
+        config["route"]["default_domain_resolver"] = "bootstrap"
+    elif manual_route.get("default_domain_resolver"):
+        config["route"]["default_domain_resolver"] = manual_route[
+            "default_domain_resolver"
+        ]
     if dns:
         config["dns"] = dns
     return config, len(tags), errors, nodes
@@ -284,11 +367,23 @@ def build_config(uris, selected_id="", tun_mode=False):
 def main():
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
     os.chmod(CONFIG_DIR, 0o700)
-    url = read_subscription_url()
+    urls = read_subscription_urls()
+    manual_profile = read_manual_profile()
+    uris = []
+    failed_sources = 0
+    for index, url in enumerate(urls, start=1):
+        try:
+            uris.extend(read_subscription(url))
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            failed_sources += 1
+            print("Subscription source {} failed: {}".format(
+                index, type(error).__name__
+            ), file=sys.stderr)
     config, supported, skipped, nodes = build_config(
-        read_subscription(url),
+        uris,
         read_selected_server(),
         tun_mode=os.environ.get("TGMUOS_SINGBOX_MODE") == "tun",
+        manual_profile=manual_profile,
     )
     servers = sort_servers_by_ping(nodes)
     write_server_list(servers)
@@ -301,8 +396,8 @@ def main():
         os.fsync(output.fileno())
     os.replace(temporary, SINGBOX_CONFIG)
     os.chmod(SINGBOX_CONFIG, 0o600)
-    print("Imported {} VLESS nodes ({} unsupported entries skipped)".format(
-        supported, skipped
+    print("Imported {} VLESS nodes ({} unsupported entries, {} failed sources)".format(
+        supported, skipped, failed_sources
     ))
 
 

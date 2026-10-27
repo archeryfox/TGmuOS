@@ -2,8 +2,6 @@
 
 #include "keyboard.h"
 
-#include "preferences.h"
-
 #include <SDL2/SDL.h>
 
 #include <dirent.h>
@@ -25,6 +23,8 @@ typedef struct {
     int caps_lock;
     int control;
     int alt;
+    int russian;
+    int language_switch_space;
 } KeyboardDevice;
 
 static KeyboardDevice devices[MAX_KEYBOARDS];
@@ -80,6 +80,7 @@ static void scan_devices(void) {
         }
         devices[device_count].fd = fd;
         memcpy(devices[device_count].path, path, (size_t)length + 1);
+        devices[device_count].russian = 1;
         ++device_count;
     }
     closedir(directory);
@@ -219,6 +220,15 @@ static void push_text_event(const char* text) {
 
 static void process_key_event(KeyboardDevice* device, const struct input_event* input) {
     int pressed = input->value != 0;
+    if (input->code == KEY_SPACE && device->language_switch_space) {
+        if (input->value == 0) device->language_switch_space = 0;
+        return;
+    }
+    if (input->code == KEY_SPACE && device->control) {
+        if (input->value == 1) device->russian = !device->russian;
+        device->language_switch_space = 1;
+        return;
+    }
     switch (input->code) {
         case KEY_LEFTSHIFT:
         case KEY_RIGHTSHIFT: device->shift = pressed; break;
@@ -239,7 +249,7 @@ static void process_key_event(KeyboardDevice* device, const struct input_event* 
     push_key_event(device, input);
 
     const char* text = character_for_key(
-        input->code, device->shift, device->caps_lock, preferences_is_russian());
+        input->code, device->shift, device->caps_lock, device->russian);
     if (text && !device->control && !device->alt) push_text_event(text);
 }
 

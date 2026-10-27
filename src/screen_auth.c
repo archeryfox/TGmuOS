@@ -16,53 +16,155 @@ static const SDL_Color COLOR_BLUE = {46, 140, 220, 255};
 static const SDL_Color COLOR_PANEL = {31, 39, 51, 255};
 
 static const char* AUTH_DIGITS[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
-static const char* AUTH_ENGLISH[] = {
-    "a", "b", "c", "d", "e", "f", "g", "h", "i",
-    "j", "k", "l", "m", "n", "o", "p", "q", "r",
-    "s", "t", "u", "v", "w", "x", "y", "z"
+static const char* const AUTH_ENGLISH_ROWS[3][10] = {
+    {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+    {"a", "s", "d", "f", "g", "h", "j", "k", "l", NULL},
+    {"z", "x", "c", "v", "b", "n", "m", NULL, NULL, NULL},
 };
-static const char* AUTH_RUSSIAN[] = {
-    "а", "б", "в", "г", "д", "е", "ё", "ж", "з", "и", "й",
-    "к", "л", "м", "н", "о", "п", "р", "с", "т", "у",
-    "ф", "х", "ц", "ч", "ш", "щ", "ъ", "ы", "ь", "э", "ю", "я"
+static const int AUTH_ENGLISH_ROW_COUNTS[3] = {10, 9, 7};
+static const char* const AUTH_RUSSIAN_ROWS[3][12] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ"},
+    {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э", NULL},
+    {"ё", "я", "ч", "с", "м", "и", "т", "ь", "б", "ю", NULL, NULL},
 };
-static const char* AUTH_RUSSIAN_UPPER[] = {
-    "А", "Б", "В", "Г", "Д", "Е", "Ё", "Ж", "З", "И", "Й",
-    "К", "Л", "М", "Н", "О", "П", "Р", "С", "Т", "У",
-    "Ф", "Х", "Ц", "Ч", "Ш", "Щ", "Ъ", "Ы", "Ь", "Э", "Ю", "Я"
+static const char* const AUTH_RUSSIAN_UPPER_ROWS[3][12] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ъ"},
+    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э", NULL},
+    {"Ё", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", NULL, NULL},
 };
+static const int AUTH_RUSSIAN_ROW_COUNTS[3] = {12, 11, 10};
 static const char* AUTH_SYMBOLS[] = {
     "+", "-", ".", "@", "_", "!", "?", "#", "$", "%", "&"
 };
-#define AUTH_COLUMNS 8
+#define AUTH_DIGIT_COUNT 10
+#define AUTH_SYMBOL_COUNT 11
+#define AUTH_SERVICE_COUNT 6
+#define AUTH_KEYBOARD_ROWS 6
 
-static int auth_letter_count(void) {
-    return preferences_is_russian()
-        ? (int)(sizeof(AUTH_RUSSIAN) / sizeof(AUTH_RUSSIAN[0]))
-        : (int)(sizeof(AUTH_ENGLISH) / sizeof(AUTH_ENGLISH[0]));
+static int auth_letter_row_count(const ScreenAuth* screen, int row) {
+    return screen->russian_keyboard
+        ? AUTH_RUSSIAN_ROW_COUNTS[row] : AUTH_ENGLISH_ROW_COUNTS[row];
 }
 
-static int auth_key_count(void) {
-    return 10 + auth_letter_count() +
-           (int)(sizeof(AUTH_SYMBOLS) / sizeof(AUTH_SYMBOLS[0])) + 5;
+static int auth_letter_count(const ScreenAuth* screen) {
+    int count = 0;
+    for (int row = 0; row < 3; ++row) count += auth_letter_row_count(screen, row);
+    return count;
 }
 
-static const char* auth_key_label(int index) {
-    int letters = auth_letter_count();
-    if (index < 10) return AUTH_DIGITS[index];
-    if (index < 10 + letters) {
-        int letter = index - 10;
-        if (preferences_is_russian()) {
-            return AUTH_RUSSIAN[letter];
+static int auth_symbol_start(const ScreenAuth* screen) {
+    return AUTH_DIGIT_COUNT + auth_letter_count(screen);
+}
+
+static int auth_service_start(const ScreenAuth* screen) {
+    return auth_symbol_start(screen) + AUTH_SYMBOL_COUNT;
+}
+
+static int auth_key_count(const ScreenAuth* screen) {
+    return auth_service_start(screen) + AUTH_SERVICE_COUNT;
+}
+
+static int auth_row_count(const ScreenAuth* screen, int row) {
+    if (row == 0) return AUTH_DIGIT_COUNT;
+    if (row >= 1 && row <= 3) return auth_letter_row_count(screen, row - 1);
+    if (row == 4) return AUTH_SYMBOL_COUNT;
+    if (row == 5) return AUTH_SERVICE_COUNT;
+    return 0;
+}
+
+static int auth_key_position(const ScreenAuth* screen, int index,
+                             int* row, int* column) {
+    if (index < 0 || index >= auth_key_count(screen)) return 0;
+    if (index < AUTH_DIGIT_COUNT) {
+        *row = 0;
+        *column = index;
+        return 1;
+    }
+    int letters_end = auth_symbol_start(screen);
+    if (index < letters_end) {
+        int remaining = index - AUTH_DIGIT_COUNT;
+        for (int letter_row = 0; letter_row < 3; ++letter_row) {
+            int count = auth_letter_row_count(screen, letter_row);
+            if (remaining < count) {
+                *row = letter_row + 1;
+                *column = remaining;
+                return 1;
+            }
+            remaining -= count;
         }
-        return AUTH_ENGLISH[letter];
+        return 0;
     }
-    index -= 10 + letters;
-    if (index < (int)(sizeof(AUTH_SYMBOLS) / sizeof(AUTH_SYMBOLS[0]))) {
-        return AUTH_SYMBOLS[index];
+    if (index < auth_service_start(screen)) {
+        *row = 4;
+        *column = index - letters_end;
+        return 1;
     }
-    static const char* controls[] = {"SPACE", "DEL", "CASE", "OK", "QR"};
-    return controls[index - (int)(sizeof(AUTH_SYMBOLS) / sizeof(AUTH_SYMBOLS[0]))];
+    *row = 5;
+    *column = index - auth_service_start(screen);
+    return 1;
+}
+
+static int auth_key_index_at(const ScreenAuth* screen, int row, int column) {
+    if (row == 0) return column;
+    if (row >= 1 && row <= 3) {
+        int index = AUTH_DIGIT_COUNT;
+        for (int letter_row = 0; letter_row < row - 1; ++letter_row) {
+            index += auth_letter_row_count(screen, letter_row);
+        }
+        return index + column;
+    }
+    if (row == 4) return auth_symbol_start(screen) + column;
+    return auth_service_start(screen) + column;
+}
+
+static void auth_move_selection(ScreenAuth* screen, int direction) {
+    int row, column;
+    if (!auth_key_position(screen, screen->selected_key, &row, &column)) {
+        screen->selected_key = 0;
+        return;
+    }
+    if (direction == 0 && column > 0) --column;
+    else if (direction == 1 && column + 1 < auth_row_count(screen, row)) ++column;
+    else if (direction == 2 && row > 0) {
+        --row;
+        if (column >= auth_row_count(screen, row)) column = auth_row_count(screen, row) - 1;
+    } else if (direction == 3 && row + 1 < AUTH_KEYBOARD_ROWS) {
+        ++row;
+        if (column >= auth_row_count(screen, row)) column = auth_row_count(screen, row) - 1;
+    } else return;
+    screen->selected_key = auth_key_index_at(screen, row, column);
+}
+
+static const char* auth_key_label(const ScreenAuth* screen, int index,
+                                 char* buffer, size_t capacity) {
+    if (index < AUTH_DIGIT_COUNT) return AUTH_DIGITS[index];
+    int letters_end = auth_symbol_start(screen);
+    if (index < letters_end) {
+        int row, column;
+        if (!auth_key_position(screen, index, &row, &column)) return "";
+        if (screen->russian_keyboard) {
+            return screen->uppercase ? AUTH_RUSSIAN_UPPER_ROWS[row - 1][column]
+                                     : AUTH_RUSSIAN_ROWS[row - 1][column];
+        }
+        const char* label = AUTH_ENGLISH_ROWS[row - 1][column];
+        if (screen->uppercase) {
+            snprintf(buffer, capacity, "%c", label[0] - 'a' + 'A');
+            return buffer;
+        }
+        return label;
+    }
+    if (index < auth_service_start(screen)) {
+        return AUTH_SYMBOLS[index - letters_end];
+    }
+    static const char* const ENGLISH_SERVICE[] = {
+        "SPACE", "DEL", "CASE", "РУС", "OK", "QR"
+    };
+    static const char* const RUSSIAN_SERVICE[] = {
+        "ПРОБЕЛ", "УДЛ", "РЕГ", "EN", "OK", "QR"
+    };
+    int service = index - auth_service_start(screen);
+    return screen->russian_keyboard ? RUSSIAN_SERVICE[service]
+                                    : ENGLISH_SERVICE[service];
 }
 
 static int auth_is_collecting(void) {
@@ -101,32 +203,27 @@ static void submit_auth(ScreenAuth* screen) {
 }
 
 static void activate_auth_key(ScreenAuth* screen) {
-    int letters = auth_letter_count();
-    int symbols = 10 + letters;
-    int controls = symbols + (int)(sizeof(AUTH_SYMBOLS) / sizeof(AUTH_SYMBOLS[0]));
-    if (screen->selected_key < 10) {
+    if (screen->selected_key < AUTH_DIGIT_COUNT) {
         append_character(screen, (char)('0' + screen->selected_key));
-    } else if (screen->selected_key < symbols) {
-        int letter = screen->selected_key - 10;
-        if (preferences_is_russian()) {
-            append_auth_text(screen, screen->uppercase
-                ? AUTH_RUSSIAN_UPPER[letter] : AUTH_RUSSIAN[letter]);
-        } else {
-            char value = AUTH_ENGLISH[letter][0];
-            append_character(screen, screen->uppercase
-                ? (char)(value - 'a' + 'A') : value);
-        }
-    } else if (screen->selected_key < controls) {
-        append_auth_text(screen, AUTH_SYMBOLS[screen->selected_key - symbols]);
-    } else if (screen->selected_key == controls) {
+    } else if (screen->selected_key < auth_symbol_start(screen)) {
+        char label[8];
+        append_auth_text(screen, auth_key_label(screen, screen->selected_key,
+                                                label, sizeof(label)));
+    } else if (screen->selected_key < auth_service_start(screen)) {
+        append_auth_text(screen, AUTH_SYMBOLS[
+            screen->selected_key - auth_symbol_start(screen)]);
+    } else if (screen->selected_key == auth_service_start(screen)) {
         append_character(screen, ' ');
-    } else if (screen->selected_key == controls + 1) {
+    } else if (screen->selected_key == auth_service_start(screen) + 1) {
         remove_last_character(screen);
-    } else if (screen->selected_key == controls + 2) {
+    } else if (screen->selected_key == auth_service_start(screen) + 2) {
         screen->uppercase = !screen->uppercase;
-    } else if (screen->selected_key == controls + 3) {
+    } else if (screen->selected_key == auth_service_start(screen) + 3) {
+        screen->russian_keyboard = !screen->russian_keyboard;
+        screen->selected_key = auth_service_start(screen) + 3;
+    } else if (screen->selected_key == auth_service_start(screen) + 4) {
         submit_auth(screen);
-    } else if (screen->selected_key == controls + 4) {
+    } else if (screen->selected_key == auth_service_start(screen) + 5) {
         screen->input_length = 0;
         screen->input[0] = '\0';
         tg_request_qr_auth();
@@ -135,55 +232,50 @@ static void activate_auth_key(ScreenAuth* screen) {
 
 static void auth_handle(Screen* self, const SDL_Event* event) {
     ScreenAuth* screen = (ScreenAuth*)self;
-    if (event->type != SDL_KEYDOWN) return;
+    if (event->type == SDL_TEXTINPUT) {
+        if (auth_is_collecting()) append_auth_text(screen, event->text.text);
+        return;
+    }
+    if (event->type != SDL_KEYDOWN || event->key.repeat) return;
 
-    if (event->key.keysym.sym == SDLK_t) {
+    if (event->key.keysym.sym == SDLK_t &&
+        event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
         app_set_screen(ScreenId_Settings);
         return;
     }
 
     if (auth_is_collecting()) {
         SDL_Keycode key = event->key.keysym.sym;
-        if (key >= SDLK_a && key <= SDLK_z) {
-            char value = (char)('a' + key - SDLK_a);
-            append_character(screen, screen->uppercase
-                ? (char)(value - 'a' + 'A') : value);
-            return;
-        }
-        if (key >= SDLK_0 && key <= SDLK_9) {
-            append_character(screen, (char)('0' + key - SDLK_0));
-            return;
-        }
         switch (key) {
-            case SDLK_UP:
-                if (screen->selected_key >= AUTH_COLUMNS) {
-                    screen->selected_key -= AUTH_COLUMNS;
-                }
-                break;
-            case SDLK_DOWN:
-                if (screen->selected_key + AUTH_COLUMNS < auth_key_count()) {
-                    screen->selected_key += AUTH_COLUMNS;
-                }
-                break;
-            case SDLK_LEFT:
-                if (screen->selected_key > 0) --screen->selected_key;
-                break;
-            case SDLK_RIGHT:
-                if (screen->selected_key + 1 < auth_key_count()) ++screen->selected_key;
-                break;
+            case SDLK_UP: auth_move_selection(screen, 2); break;
+            case SDLK_DOWN: auth_move_selection(screen, 3); break;
+            case SDLK_LEFT: auth_move_selection(screen, 0); break;
+            case SDLK_RIGHT: auth_move_selection(screen, 1); break;
             case SDLK_RETURN:
-            case SDLK_s:
                 submit_auth(screen);
                 break;
             case SDLK_SPACE:
-                activate_auth_key(screen);
+                if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
+                    activate_auth_key(screen);
+                }
+                break;
+            case SDLK_s:
+                if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
+                    submit_auth(screen);
+                }
                 break;
             case SDLK_BACKSPACE:
-            case SDLK_x:
                 remove_last_character(screen);
                 break;
+            case SDLK_x:
+                if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
+                    remove_last_character(screen);
+                }
+                break;
             case SDLK_y:
-                screen->uppercase = !screen->uppercase;
+                if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
+                    screen->uppercase = !screen->uppercase;
+                }
                 break;
             default:
                 break;
@@ -207,7 +299,7 @@ static void auth_update(Screen* self) {
 }
 
 static void auth_render(Screen* self, AppRenderer* renderer) {
-    (void)self;
+    ScreenAuth* screen = (ScreenAuth*)self;
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, (SDL_Color){20, 25, 33, 255});
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 54}, (SDL_Color){29, 39, 53, 255});
     ui_text(renderer, "Telegram", 22, 12, 24, COLOR_TEXT);
@@ -218,7 +310,6 @@ static void auth_render(Screen* self, AppRenderer* renderer) {
         ui_text(renderer, tg_prompt(), 22, 108, 14, COLOR_MUTED);
         ui_round_rect(renderer, (SDL_Rect){18, 132, 604, 38}, 10, COLOR_PANEL);
         char masked[sizeof(((ScreenAuth*)self)->input)];
-        const ScreenAuth* screen = (const ScreenAuth*)self;
         if (tg_state() == TgStatePassword) {
             int length = screen->input_length;
             if (length >= (int)sizeof(masked)) length = (int)sizeof(masked) - 1;
@@ -228,33 +319,40 @@ static void auth_render(Screen* self, AppRenderer* renderer) {
             snprintf(masked, sizeof(masked), "%s", screen->input);
         }
         ui_text(renderer, masked, 30, 142, 18, COLOR_TEXT);
-        for (int i = 0; i < auth_key_count(); ++i) {
-            int row = i / AUTH_COLUMNS;
-            int column = i % AUTH_COLUMNS;
-            int x = 7 + column * 79;
-            int y = 188 + row * 28;
-            const char* label = auth_key_label(i);
-            int letters = auth_letter_count();
-            if (i >= 10 && i < 10 + letters && screen->uppercase) {
-                int letter = i - 10;
-                if (preferences_is_russian()) label = AUTH_RUSSIAN_UPPER[letter];
-                else {
-                    static char uppercase_label[2];
-                    uppercase_label[0] = (char)(AUTH_ENGLISH[letter][0] - 'a' + 'A');
-                    uppercase_label[1] = '\0';
-                    label = uppercase_label;
-                }
+        if (screen->selected_key >= auth_key_count(screen)) screen->selected_key = 0;
+        for (int row = 0; row < AUTH_KEYBOARD_ROWS; ++row) {
+            int count = auth_row_count(screen, row);
+            int gap = 4;
+            int key_width = (600 - gap * (count - 1)) / count;
+            int max_key_width = row == 5 ? 92 : 54;
+            if (key_width > max_key_width) key_width = max_key_width;
+            int total_width = count * key_width + gap * (count - 1);
+            int x = (640 - total_width) / 2;
+            int y = 188 + row * 29;
+            int index = auth_key_index_at(screen, row, 0);
+            for (int column = 0; column < count; ++column) {
+                int key_index = index + column;
+                char label_buffer[8];
+                const char* label = auth_key_label(screen, key_index,
+                                                   label_buffer,
+                                                   sizeof(label_buffer));
+                ui_round_rect(renderer,
+                              (SDL_Rect){x, y, key_width, 24}, 6,
+                              key_index == screen->selected_key
+                                  ? COLOR_BLUE : COLOR_PANEL);
+                int text_width = ui_text_width(label, 13);
+                int text_x = x + (key_width - text_width) / 2;
+                if (text_x < x + 2) text_x = x + 2;
+                ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+                x += key_width + gap;
             }
-            ui_round_rect(renderer, (SDL_Rect){x, y, 73, 24}, 6,
-                          i == screen->selected_key ? COLOR_BLUE : COLOR_PANEL);
-            ui_text(renderer, label, x + 6, y + 4, 13, COLOR_TEXT);
         }
         if (tg_last_error()[0]) {
             ui_text(renderer, tg_last_error(), 16, 414, 14,
                     (SDL_Color){255, 204, 105, 255});
         }
-        ui_text(renderer, tr("D-pad: select  A: type  START: submit",
-                             "D-pad: выбор  A: ввод  START: далее"),
+        ui_text(renderer, tr("D-pad: select  A: type  RU/EN key: language  START: submit",
+                             "D-pad: выбор  A: ввод  RU/EN: язык  START: далее"),
                 16, 438, 13, COLOR_MUTED);
     } else if (tg_state() == TgStateQr) {
         unsigned char matrix[37][37];
@@ -288,6 +386,17 @@ static void auth_render(Screen* self, AppRenderer* renderer) {
         ui_text(renderer, tr("Use Telegram: Settings > Devices > Link Desktop Device",
                              "Telegram: Настройки > Устройства > Подключить устройство"),
                 24, 432, 13, COLOR_MUTED);
+    } else if (tg_state() == TgStateError) {
+        ui_round_rect(renderer, (SDL_Rect){18, 122, 604, 184}, 12, COLOR_PANEL);
+        ui_text(renderer, tr("Connection error", "Ошибка подключения"),
+                34, 140, 20, COLOR_TEXT);
+        ui_text(renderer, tg_status(), 34, 176, 15, COLOR_MUTED);
+        if (tg_last_error()[0]) {
+            ui_text(renderer, tg_last_error(), 34, 212, 13,
+                    (SDL_Color){255, 204, 105, 255});
+        }
+        ui_text(renderer, tr("T: settings", "T: настройки"),
+                24, 438, 13, COLOR_MUTED);
     } else if (tg_state() == TgStateInitializing) {
         ui_round_rect(renderer, (SDL_Rect){18, 170, 604, 130}, 12, COLOR_PANEL);
         ui_text(renderer, tr("Connecting", "Подключение"), 34, 188, 20, COLOR_TEXT);
@@ -326,5 +435,6 @@ ScreenAuth* screen_auth_create(void) {
     screen->base.update = auth_update;
     screen->base.render = auth_render;
     screen->base.destroy = auth_destroy;
+    screen->russian_keyboard = 1;
     return screen;
 }

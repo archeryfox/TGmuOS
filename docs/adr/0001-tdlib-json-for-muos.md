@@ -18,8 +18,9 @@ user's encrypted TDLib database are local device data, not build artifacts.
 ## Decision
 
 Use the official TDLib JSON interface (`td_json_client`) as the Telegram
-backend. Build the first muOS candidate from the official
-[TDLib v1.8.0 source archive](https://github.com/tdlib/td/archive/refs/tags/v1.8.0.tar.gz)
+backend. The original v1.8.0 library proved too old for Telegram's current API.
+The muOS runtime was therefore rebuilt from official TDLib commit
+[`ea3f69ce11aef458bfbb09869b809ede4447486f`](https://github.com/tdlib/td/commit/ea3f69ce11aef458bfbb09869b809ede4447486f)
 for AArch64 Linux. Package the resulting `libtdjson.so` in the application's
 `lib/` directory; do not link the app to a host or x86_64 TDLib build.
 
@@ -47,10 +48,8 @@ Keep per-installation configuration and account data outside the binary:
   setup status instead of fabricating chats or successful sends.
 - Releases must provide an AArch64 library and verify its shared-library
   dependencies against the supported muOS runtime.
-- TDLib v1.8.0 is the initial build target, not a claim that this version has
-  been built, tested on-device, or is the preferred version for future releases.
-  Revisit the version before release if the Telegram API, security maintenance,
-  or muOS ABI requires it.
+- The deployed TDLib build is tied to the source commit above. Revisit it before
+  release if the Telegram API, security maintenance, or muOS ABI requires it.
 
 ## Validation required before release
 
@@ -60,4 +59,17 @@ Keep per-installation configuration and account data outside the binary:
    muOS device.
 3. Exercise authorization, QR login, chat loading, message history, and sending
    with a test account; confirm credentials and login codes are not logged.
-4. Record the source tag and build toolchain used for the release artifact.
+4. Record the source commit and build toolchain used for the release artifact.
+
+## Current device build (2026-10-28)
+
+- TDLib source: commit `ea3f69ce11aef458bfbb09869b809ede4447486f`.
+- Runtime artifact: AArch64 `libtdjson.so.1.8.69`; its only `DT_NEEDED`
+  libraries are `libm.so.6` and `libc.so.6`, with GLIBC symbol versions up to
+  2.38.
+- On-device deployment uses timestamped backups and atomic replacement. The
+  running TGMUOS process was confirmed to map the new library after restart.
+- The user reports that a prior run authorized successfully and loaded their
+  chats, but was unstable and they exited. The current rebuild's stability
+  still needs observation. Build and deployment evidence is recorded in
+  [QA-2026-10-28-001](../qa/2026-10-28-tdlib-rebuild.md).

@@ -21,6 +21,10 @@ typedef struct {
     int64_t id;
     char title[TG_TEXT_LENGTH];
     char preview[TG_TEXT_LENGTH];
+    int photo_file_id;
+    int photo_pending;
+    char photo_path[256];
+    int archived;
 } TgChat;
 
 typedef struct {
@@ -45,6 +49,11 @@ void tg_load_older_messages(void);
 const char* tg_last_error(void);
 int tg_chat_count(void);
 const TgChat* tg_chat_at(int index);
+int tg_chat_has_photo(int index);
+const char* tg_chat_photo_path(int index);
+int tg_selected_chat_has_photo(void);
+const char* tg_selected_chat_photo_path(void);
+void tg_open_archived_chat(int64_t chat_id);
 int tg_folder_count(void);
 const char* tg_folder_title(int index);
 int tg_current_folder(void);
