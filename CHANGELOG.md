@@ -54,6 +54,27 @@
   для AArch64 — нативная сборка в контейнере `fedora:39` (glibc 2.38) под
   qemu, OpenSSL 3.3.2/zlib 1.3.1 статически, `libstdc++`/`libgcc` статически.
 
+### Fixed
+- `setEncryptionKey` → `checkDatabaseEncryptionKey` (TDLib отвергала вымышленный
+  метод: «Unknown class setEncryptionKey» — обнаружено контрольным запуском
+  на устройстве после выкладки).
+
+### Notes
+- `t.me/webproxy`-ссылки — это прокси Telegram **Web** (host/token), TDLib их
+  не принимает («Wrong/Unsupported proxy secret»); в `mtproto.conf` нужны
+  классические MTProto-ссылки `t.me/proxy?server=…&secret=…`.
+- Батарея устройства в момент проверки: 2% (axp2202-battery).
+
+## Следующий спринт (запрос пользователя 2026-10-28)
+
+- Папки чатов TDLib (`chatListFolder`): список папок и переключение в шапке
+  списка чатов — требует проверки API свежей TDLib (нельзя проверить до
+  замены libtdjson.so, QA-2026-10-27-001).
+- Медиа в сообщениях: фото через TDLib `downloadFile` (приоритеты очереди:
+  первые 20 чатов — высокий приоритет на первые 15 минут) + декодирование
+  через SDL2_image устройства (dlopen, libSDL2_image-2.0.so.0.800.2).
+  Статус-бар уже показывает PROXY/VPN/сеть/батарею/время.
+
 ## 2026-10-26 — сессия «Fixing Telegram Startup»
 
 ### Fixed

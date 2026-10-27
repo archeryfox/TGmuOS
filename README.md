@@ -124,12 +124,16 @@ Emoji and flags in chat and server names render through a bundled fallback
 font (`res/fonts/NotoEmoji-Regular.ttf`, SIL Open Font License): glyphs
 missing in the interface font are drawn from the emoji font automatically.
 
-MTProto proxies (for example `t.me/webproxy` links) can be listed in
+MTProto proxies (for example `t.me/proxy?server=…&secret=…` links) can be
+listed in
 `/root/.config/tgmuos/mtproto.conf`, one per line:
 `name<TAB>server<TAB>port<TAB>secret` (secret in the base64url form from the
 link). The app offers all of them to TDLib after initialization; the first
 entry is enabled automatically only when the SOCKS subscription proxy is not
 active. The file is private (600) and secrets are never logged.
+**Note:** `t.me/webproxy` links are Telegram *Web* proxies (browser access
+via `host/token` paths) — TDLib cannot use them; only classic MTProto
+proxies work here.
 
 Without both TDLib and the credentials file, the app displays setup status
 instead of showing fake chats or pretending messages were sent. `--smoke-test`
