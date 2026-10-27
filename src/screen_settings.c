@@ -146,9 +146,17 @@ static void settings_handle(Screen* self, const SDL_Event* event) {
                 }
             } else if (screen->selected == 3) {
                 enter_server_list(screen);
-            } else if (screen->selected == 7) {
+            } else if (screen->selected == 5) {
                 if (!tg_apply_subscription(preferences_subscription_enabled())) {
                     SDL_Log("Unable to apply the Telegram connection");
+                }
+            } else if (screen->selected == 6) {
+                if (!tg_logout()) {
+                    SDL_Log("Unable to sign out now");
+                }
+            } else if (screen->selected == 7) {
+                if (!tg_restore_saved_account()) {
+                    SDL_Log("No saved account to restore");
                 }
             }
             break;
@@ -208,9 +216,9 @@ static void settings_render(Screen* self, AppRenderer* renderer) {
         tr("VLESS subscription", "Подписка VLESS"),
         tr("Choose server", "Выбрать сервер"),
         tr("Subscription link", "Ссылка подписки"),
-        tr("Engine", "Движок"),
-        tr("Traffic", "Трафик"),
-        tr("Apply connection", "Применить подключение")
+        tr("Apply connection", "Применить подключение"),
+        tr("Log out", "Выйти из аккаунта"),
+        tr("Saved account", "Сохранённый аккаунт")
     };
     const char* selected_server = tr("Automatic (best ping)", "Авто (лучший пинг)");
     static char server_value[PREFERENCES_SUBSCRIPTION_SERVER_NAME_LENGTH + 24];
@@ -242,9 +250,9 @@ static void settings_render(Screen* self, AppRenderer* renderer) {
         selected_server,
         preferences_subscription_configured() ? tr("Installed", "Установлена")
                                              : tr("Not configured", "Не задана"),
-        "sing-box",
-        tr("Telegram client only", "Только клиент Telegram"),
-        tr("Apply now", "Применить сейчас")
+        tr("Apply now", "Применить сейчас"),
+        tr("Cache kept", "Кэш сохранится"),
+        tg_has_saved_account() ? tr("Sign in", "Войти") : tr("None", "Нет")
     };
 
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);

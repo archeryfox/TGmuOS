@@ -6,6 +6,7 @@
 
 #include <SDL2/SDL.h>
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef void (*TdSend)(int, const char*);
@@ -84,6 +86,7 @@ static struct {
     int folder_count;
     int current_folder;
     uint32_t last_photo_request_ms;
+    int close_intent; /* 0 none, 1 archive cache, 2 restore saved account */
 } client;
 
 static const char* json_source;
@@ -754,6 +757,71 @@ void tg_start(void) {
     }
 }
 
+/* Alt-client style "logout": TDLib's logOut destroys ALL local data, so we
+ * close the client gracefully (close flushes without destroying) and archive
+ * the database directory instead. The server session stays valid; restoring
+ * the archive brings the account back with its full message/media cache.
+ * Same approach as multi-account TDLib clients (one database per account). */
+static void archive_current_database(void) {
+    mkdir("data/accounts", 0700);
+    char target[256];
+    snprintf(target, sizeof(target), "data/accounts/account-%lld",
+             (long long)time(NULL));
+    if (rename("data/tdlib", target) == 0) {
+        set_status(TgStateInitializing,
+                   "Cache saved. Sign in to continue.", "");
+    } else if (errno == ENOENT) {
+        set_status(TgStateInitializing,
+                   "Signed out. Sign in to continue.", "");
+    } else {
+        set_error("Could not preserve the cache; local data left in place");
+    }
+}
+
+static int restore_saved_database(void) {
+    DIR* directory = opendir("data/accounts");
+    if (!directory) return 0;
+    char backup[256] = "";
+    struct dirent* entry;
+    while ((entry = readdir(directory))) {
+        if (entry->d_name[0] == '.') continue;
+        if (strncmp(entry->d_name, "current-", 8) == 0) continue;
+        int length = snprintf(backup, sizeof(backup),
+                              "data/accounts/%s", entry->d_name);
+        if (length > 0 && (size_t)length < sizeof(backup)) break;
+        backup[0] = '\0';
+    }
+    closedir(directory);
+    if (!backup[0]) return 0;
+
+    char stash[256];
+    snprintf(stash, sizeof(stash), "data/accounts/current-%lld",
+             (long long)time(NULL));
+    if (rename("data/tdlib", stash) != 0 && errno != ENOENT) {
+        return 0;
+    }
+    if (rename(backup, "data/tdlib") != 0) {
+        rename(stash, "data/tdlib");
+        return 0;
+    }
+    set_status(TgStateInitializing, "Restoring the saved account…", "");
+    return 1;
+}
+
+int tg_has_saved_account(void) {
+    DIR* directory = opendir("data/accounts");
+    if (!directory) return 0;
+    int found = 0;
+    struct dirent* entry;
+    while (!found && (entry = readdir(directory))) {
+        if (entry->d_name[0] == '.') continue;
+        if (strncmp(entry->d_name, "current-", 8) == 0) continue;
+        found = 1;
+    }
+    closedir(directory);
+    return found;
+}
+
 static void request_chats(void) {
     char request[160];
     if (client.current_folder > 0 &&
@@ -915,7 +983,34 @@ static void handle_authorization(const char* state) {
         set_status(TgStateInitializing, "Closing Telegram session…", "");
     } else if (strcmp(state, "authorizationStateClosed") == 0) {
         client.closed = 1;
-        set_status(TgStateUnavailable, "Telegram session closed", "");
+        if (client.close_intent == 1) {
+            archive_current_database();
+        } else if (client.close_intent == 2) {
+            restore_saved_database();
+        }
+        client.close_intent = 0;
+        /* Recreate the TDLib client so the sign-in screen appears again
+         * without restarting the app. */
+        client.selected_chat = 0;
+        client.chat_count = 0;
+        client.message_count = 0;
+        client.requested_chats = 0;
+        client.folder_count = 0;
+        client.current_folder = 0;
+        client.closed = 0;
+        client.running = 0;
+        if (client.create_client_id) {
+            client.client_id = client.create_client_id();
+        } else {
+            client.client_id = 0;
+        }
+        if (client.client_id > 0) {
+            client.running = 1;
+            set_status(TgStateInitializing, "Connecting to Telegram…", "");
+            send_request("{\"@type\":\"getAuthorizationState\"}");
+        } else {
+            set_error("Cannot restart the Telegram client; relaunch the app");
+        }
     }
 }
 
@@ -1559,6 +1654,30 @@ int tg_apply_proxy(int enabled) {
     if (prepare_proxy()) return 1;
     preferences_set_proxy_enabled(previous);
     return 0;
+}
+
+/* Sign out locally while preserving the message/media cache: close TDLib
+ * gracefully and archive its database directory (see archive_current_database). */
+int tg_logout(void) {
+    if (!client.running) return 0;
+    client.error[0] = '\0';
+    client.chat_count = 0;
+    client.message_count = 0;
+    client.close_intent = 1;
+    set_status(TgStateInitializing, "Saving the cache and signing out…", "");
+    send_request("{\"@type\":\"close\"}");
+    return 1;
+}
+
+int tg_restore_saved_account(void) {
+    if (!client.running || !tg_has_saved_account()) return 0;
+    client.error[0] = '\0';
+    client.chat_count = 0;
+    client.message_count = 0;
+    client.close_intent = 2;
+    set_status(TgStateInitializing, "Restoring the saved account…", "");
+    send_request("{\"@type\":\"close\"}");
+    return 1;
 }
 
 int tg_apply_subscription(int enabled) {
