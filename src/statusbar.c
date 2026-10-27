@@ -46,7 +46,7 @@ static void read_battery(void) {
     struct dirent* entry;
     while ((entry = readdir(directory))) {
         if (entry->d_name[0] == '.') continue;
-        char path[256];
+        char path[320];
         snprintf(path, sizeof(path),
                  "/sys/class/power_supply/%s/capacity", entry->d_name);
         int capacity = read_int_file(path);
@@ -79,7 +79,7 @@ static void read_network(void) {
                 strncmp(entry->d_name, "tailscale", 9) == 0) {
             continue;
         }
-        char path[256];
+        char path[320];
         snprintf(path, sizeof(path), "/sys/class/net/%s/operstate",
                  entry->d_name);
         FILE* file = fopen(path, "r");
