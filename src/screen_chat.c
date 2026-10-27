@@ -10,27 +10,32 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char* ENGLISH_KEYS[] = {
-    "a", "b", "c", "d", "e", "f", "g", "h", "i",
-    "j", "k", "l", "m", "n", "o", "p", "q", "r",
-    "s", "t", "u", "v", "w", "x", "y", "z"
+/* QWERTY rows; letter keys are smaller than the service keys. */
+static const char* const ENGLISH_ROWS[3][10] = {
+    {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+    {"a", "s", "d", "f", "g", "h", "j", "k", "l"},
+    {"z", "x", "c", "v", "b", "n", "m"},
 };
-static const char* RUSSIAN_KEYS[] = {
-    "а", "б", "в", "г", "д", "е", "ё", "ж", "з", "и", "й",
-    "к", "л", "м", "н", "о", "п", "р", "с", "т", "у",
-    "ф", "х", "ц", "ч", "ш", "щ", "ъ", "ы", "ь", "э", "ю", "я"
+static const int ENGLISH_ROW_COUNTS[3] = {10, 9, 7};
+static const char* const RUSSIAN_ROWS[3][12] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ"},
+    {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э"},
+    {"ё", "я", "ч", "с", "м", "и", "т", "ь", "б", "ю"},
 };
-static const char* RUSSIAN_UPPER_KEYS[] = {
-    "А", "Б", "В", "Г", "Д", "Е", "Ё", "Ж", "З", "И", "Й",
-    "К", "Л", "М", "Н", "О", "П", "Р", "С", "Т", "У",
-    "Ф", "Х", "Ц", "Ч", "Ш", "Щ", "Ъ", "Ы", "Ь", "Э", "Ю", "Я"
+static const char* const RUSSIAN_UPPER_ROWS[3][12] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х", "Ъ"},
+    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
+    {"Ё", "Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю"},
 };
-static const char* SYMBOL_KEYS[] = {
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    ".", ",", "!", "?", "@", "#", "-", "_", "(", ")", "[",
-    "]", "'", "\"", "/", ":", ";", "+", "=", "*", "&", "%", "$"
+static const int RUSSIAN_ROW_COUNTS[3] = {12, 11, 10};
+static const char* const SYMBOL_ROWS[3][11] = {
+    {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."},
+    {",", "!", "?", "@", "#", "-", "_", "(", ")", "[", "]"},
+    {"'", "\"", "/", ":", ";", "+", "=", "*", "&", "%", "$"},
 };
-#define KEY_COLUMNS 7
+static const int SYMBOL_ROW_COUNTS[3] = {11, 11, 11};
+#define KEYBOARD_ROWS 3
+#define SERVICE_KEY_COUNT 5
 
 static const SDL_Color COLOR_BG = {20, 25, 33, 255};
 static const SDL_Color COLOR_HEADER = {29, 39, 53, 255};
@@ -40,6 +45,8 @@ static const SDL_Color COLOR_BLUE = {46, 140, 220, 255};
 static const SDL_Color COLOR_TEXT = {238, 241, 247, 255};
 static const SDL_Color COLOR_MUTED = {156, 168, 185, 255};
 
+static int chat_max_scroll(const ScreenChat* screen);
+
 static void send_draft(ScreenChat* screen) {
     if (screen->draft_length == 0) return;
     if (tg_send_message(screen->draft)) {
@@ -48,14 +55,98 @@ static void send_draft(ScreenChat* screen) {
     }
 }
 
-static int character_key_count(void) {
-    return preferences_is_russian()
-        ? (int)(sizeof(RUSSIAN_KEYS) / sizeof(RUSSIAN_KEYS[0]))
-        : (int)(sizeof(ENGLISH_KEYS) / sizeof(ENGLISH_KEYS[0]));
+/* Current layout: three rows of character keys plus a service row. */
+typedef struct {
+    const char* const* rows[KEYBOARD_ROWS];
+    int counts[KEYBOARD_ROWS];
+    int total;
+} KeyLayout;
+
+static KeyLayout current_layout(int symbols, int russian, int uppercase) {
+    KeyLayout layout = {{0}, {0}, 0};
+    if (symbols) {
+        for (int row = 0; row < KEYBOARD_ROWS; ++row) {
+            layout.rows[row] = SYMBOL_ROWS[row];
+            layout.counts[row] = SYMBOL_ROW_COUNTS[row];
+            layout.total += layout.counts[row];
+        }
+        return layout;
+    }
+    for (int row = 0; row < KEYBOARD_ROWS; ++row) {
+        if (russian) {
+            layout.rows[row] = uppercase
+                ? RUSSIAN_UPPER_ROWS[row] : RUSSIAN_ROWS[row];
+            layout.counts[row] = RUSSIAN_ROW_COUNTS[row];
+        } else {
+            layout.rows[row] = ENGLISH_ROWS[row];
+            layout.counts[row] = ENGLISH_ROW_COUNTS[row];
+        }
+        layout.total += layout.counts[row];
+    }
+    return layout;
 }
 
-static int key_count(void) {
-    return character_key_count() + 5;
+static int key_count_for(const ScreenChat* screen) {
+    return current_layout(screen->symbols, preferences_is_russian(),
+                          screen->uppercase).total + SERVICE_KEY_COUNT;
+}
+
+/* Locate the row/column for a key index (character area + service row). */
+static void key_position(int index, const KeyLayout* layout,
+                         int* row, int* column) {
+    int remaining = index;
+    for (int r = 0; r < KEYBOARD_ROWS; ++r) {
+        if (remaining < layout->counts[r]) {
+            *row = r;
+            *column = remaining;
+            return;
+        }
+        remaining -= layout->counts[r];
+    }
+    *row = KEYBOARD_ROWS;
+    *column = remaining;
+}
+
+static int key_index_at(const KeyLayout* layout, int row, int column) {
+    int index = 0;
+    for (int r = 0; r < row && r < KEYBOARD_ROWS; ++r) {
+        index += layout->counts[r];
+    }
+    return index + column;
+}
+
+/* Move selection by keyboard direction; rows have different lengths. */
+static void move_key_selection(ScreenChat* screen, int direction) {
+    KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+                                      screen->uppercase);
+    if (screen->selected_key < 0 || screen->selected_key >= key_count_for(screen)) {
+        screen->selected_key = 0;
+        return;
+    }
+    int row, column;
+    key_position(screen->selected_key, &layout, &row, &column);
+    if (direction == 0 && column > 0) {
+        --column;
+    } else if (direction == 1 && column + 1 < (row < KEYBOARD_ROWS
+                     ? layout.counts[row] : SERVICE_KEY_COUNT)) {
+        ++column;
+    } else if (direction == 2 && row > 0) {
+        --row;
+        int count = row < KEYBOARD_ROWS ? layout.counts[row] : SERVICE_KEY_COUNT;
+        if (column >= count) column = count - 1;
+    } else if (direction == 3 && row < KEYBOARD_ROWS) {
+        ++row;
+        int count = row < KEYBOARD_ROWS ? layout.counts[row] : SERVICE_KEY_COUNT;
+        if (column >= count) column = count - 1;
+    } else {
+        return;
+    }
+    screen->selected_key = key_index_at(&layout, row, column);
+}
+
+static int service_key_index(const ScreenChat* screen) {
+    return current_layout(screen->symbols, preferences_is_russian(),
+                          screen->uppercase).total;
 }
 
 static void append_text(ScreenChat* screen, const char* value) {
@@ -76,31 +167,38 @@ static void delete_last_character(ScreenChat* screen) {
     }
 }
 
+/* Label for a character key; English uppercases on the fly (Y key). */
+static const char* key_label(ScreenChat* screen, const KeyLayout* layout,
+                             int index, char* buffer, size_t capacity) {
+    int row, column;
+    key_position(index, layout, &row, &column);
+    const char* label = layout->rows[row][column];
+    if (!screen->symbols && !preferences_is_russian() && screen->uppercase &&
+            label[0] && label[1] == '\0' && label[0] >= 'a' && label[0] <= 'z') {
+        snprintf(buffer, capacity, "%c", label[0] - 'a' + 'A');
+        return buffer;
+    }
+    return label;
+}
+
 static void activate_key(ScreenChat* screen) {
-    int letters = character_key_count();
+    KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+                                      screen->uppercase);
+    int letters = layout.total;
+    int service = service_key_index(screen);
     if (screen->selected_key < letters) {
-        if (screen->symbols) {
-            append_text(screen, SYMBOL_KEYS[screen->selected_key]);
-        } else if (preferences_is_russian()) {
-            append_text(screen, screen->uppercase
-                ? RUSSIAN_UPPER_KEYS[screen->selected_key]
-                : RUSSIAN_KEYS[screen->selected_key]);
-        } else {
-            char value = (char)('a' + screen->selected_key);
-            if (screen->uppercase) {
-                value = (char)(value - 'a' + 'A');
-            }
-            append_text(screen, (char[]){value, '\0'});
-        }
-    } else if (screen->selected_key == letters) {
+        char label[8];
+        append_text(screen, key_label(screen, &layout, screen->selected_key,
+                                      label, sizeof(label)));
+    } else if (screen->selected_key == service) {
         append_text(screen, " ");
-    } else if (screen->selected_key == letters + 1) {
+    } else if (screen->selected_key == service + 1) {
         delete_last_character(screen);
-    } else if (screen->selected_key == letters + 2) {
+    } else if (screen->selected_key == service + 2) {
         screen->symbols = !screen->symbols;
-    } else if (screen->selected_key == letters + 3) {
+    } else if (screen->selected_key == service + 3) {
         screen->keyboard_visible = 0;
-    } else if (screen->selected_key == letters + 4) {
+    } else if (screen->selected_key == service + 4) {
         send_draft(screen);
     }
 }
@@ -111,8 +209,7 @@ static void chat_handle(Screen* self, const SDL_Event* event) {
         append_text(screen, event->text.text);
         if (screen->keyboard_visible) {
             screen->keyboard_visible = 0;
-            int count = tg_message_count();
-            screen->scroll_target = count > 6 ? (count - 6) * 48 : 0;
+            screen->scroll_target = chat_max_scroll(screen);
         }
         return;
     }
@@ -143,19 +240,16 @@ static void chat_handle(Screen* self, const SDL_Event* event) {
                 tg_load_older_messages();
                 break;
             }
-            if (screen->selected_key >= KEY_COLUMNS) screen->selected_key -= KEY_COLUMNS;
+            move_key_selection(screen, 2);
             break;
         case SDLK_DOWN:
             if (!screen->keyboard_visible) {
                 screen->scroll_target += 42;
-                int max_scroll = tg_message_count() > 6
-                    ? (tg_message_count() - 6) * 48 : 0;
+                int max_scroll = chat_max_scroll(screen);
                 if (screen->scroll_target > max_scroll) screen->scroll_target = max_scroll;
                 break;
             }
-            if (screen->selected_key + KEY_COLUMNS < key_count()) {
-                screen->selected_key += KEY_COLUMNS;
-            }
+            move_key_selection(screen, 3);
             break;
         case SDLK_PAGEUP:
             screen->scroll_target -= 140;
@@ -165,16 +259,15 @@ static void chat_handle(Screen* self, const SDL_Event* event) {
         case SDLK_PAGEDOWN:
             screen->scroll_target += 140;
             if (!screen->keyboard_visible) {
-                int max_scroll = tg_message_count() > 6
-                    ? (tg_message_count() - 6) * 48 : 0;
+                int max_scroll = chat_max_scroll(screen);
                 if (screen->scroll_target > max_scroll) screen->scroll_target = max_scroll;
             }
             break;
         case SDLK_LEFT:
-            if (screen->selected_key > 0) --screen->selected_key;
+            if (screen->keyboard_visible) move_key_selection(screen, 0);
             break;
         case SDLK_RIGHT:
-            if (screen->selected_key < key_count() - 1) ++screen->selected_key;
+            if (screen->keyboard_visible) move_key_selection(screen, 1);
             break;
         case SDLK_RETURN:
             if (event->key.keysym.mod & KMOD_SHIFT) {
@@ -191,12 +284,7 @@ static void chat_handle(Screen* self, const SDL_Event* event) {
             if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
                 screen->keyboard_visible = !screen->keyboard_visible;
             }
-            {
-                int visible = screen->keyboard_visible ? 3 : 6;
-                int count = tg_message_count();
-                screen->scroll_target = count > visible
-                    ? (count - visible) * 48 : 0;
-            }
+            screen->scroll_target = chat_max_scroll(screen);
             break;
         case SDLK_s:
             if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
@@ -237,19 +325,16 @@ static void chat_update(Screen* self) {
         int previous_count = screen->last_message_count;
         screen->last_message_count = message_count;
         if (previous_count == 0) {
-            int visible = screen->keyboard_visible ? 3 : 6;
-            screen->scroll_target = message_count > visible
-                ? (message_count - visible) * 48 : 0;
+            screen->scroll_target = chat_max_scroll(screen);
         } else if (message_count > previous_count && screen->scroll_target == 0) {
-            screen->scroll_target = (message_count - previous_count) * 48;
+            screen->scroll_target = chat_max_scroll(screen);
         } else if (message_count > previous_count) {
-            int visible = screen->keyboard_visible ? 3 : 6;
-            screen->scroll_target = message_count > visible
-                ? (message_count - visible) * 48 : 0;
+            screen->scroll_target = chat_max_scroll(screen);
         }
     }
     int viewport = screen->keyboard_visible ? 3 : 6;
-    int max_scroll = message_count > viewport ? (message_count - viewport) * 48 : 0;
+    (void)viewport;
+    int max_scroll = chat_max_scroll(screen);
     if (screen->scroll_target > max_scroll) screen->scroll_target = max_scroll;
     if (preferences_animations_enabled()) {
         float step = (float)elapsed * 0.8f;
@@ -262,6 +347,168 @@ static void chat_update(Screen* self) {
     }
 }
 
+#define MESSAGE_LINE_HEIGHT 17
+#define MESSAGE_MAX_TEXT_WIDTH 400
+
+/* Greedy word wrap: returns the number of lines the text needs at width. */
+static int wrapped_line_count(const char* text, int max_width) {
+    if (!text || !text[0]) return 1;
+    int lines = 1;
+    int line_width = 0;
+    const char* word = text;
+    while (*word) {
+        while (*word == ' ') {
+            if (line_width > 0) line_width += ui_text_width(" ", 14);
+            ++word;
+        }
+        if (!*word) break;
+        const char* end = word;
+        while (*end && *end != ' ') ++end;
+        char buffer[256];
+        size_t length = (size_t)(end - word);
+        if (length >= sizeof(buffer)) length = sizeof(buffer) - 1;
+        memcpy(buffer, word, length);
+        buffer[length] = '\0';
+        int word_width = ui_text_width(buffer, 14);
+        if (word_width > max_width) {
+            /* Very long unbreakable word: split by measured chunks. */
+            if (line_width > 0) {
+                ++lines;
+                line_width = 0;
+            }
+            lines += word_width / max_width;
+            line_width = word_width % max_width;
+        } else if (line_width > 0 && line_width + word_width > max_width) {
+            ++lines;
+            line_width = word_width;
+        } else {
+            line_width += word_width;
+        }
+        word = end;
+    }
+    return lines;
+}
+
+static int message_height(const TgMessage* message) {
+    return wrapped_line_count(message->text, MESSAGE_MAX_TEXT_WIDTH) *
+           MESSAGE_LINE_HEIGHT + 14;
+}
+
+static int chat_content_height(void) {
+    int total = 0;
+    int count = tg_message_count();
+    for (int i = 0; i < count; ++i) {
+        const TgMessage* message = tg_message_at(i);
+        if (message) total += message_height(message);
+    }
+    return total;
+}
+
+static int chat_max_scroll(const ScreenChat* screen) {
+    int max = chat_content_height() -
+              ((screen->keyboard_visible ? 205 : 380) - 72);
+    return max > 0 ? max : 0;
+}
+
+static int utf8_char_length(char first) {
+    unsigned char byte = (unsigned char)first;
+    if (byte < 0x80) return 1;
+    if ((byte & 0xe0) == 0xc0) return 2;
+    if ((byte & 0xf0) == 0xe0) return 3;
+    if ((byte & 0xf8) == 0xf0) return 4;
+    return 1;
+}
+
+static int text_n_width(const char* text, int length) {
+    char buffer[256];
+    if (length >= (int)sizeof(buffer)) length = (int)sizeof(buffer) - 1;
+    memcpy(buffer, text, (size_t)length);
+    buffer[length] = '\0';
+    return ui_text_width(buffer, 14);
+}
+
+/* Draw one word, splitting across lines if it alone exceeds max_width. */
+static void draw_long_word(AppRenderer* renderer, const char* word, int length,
+                           int x, int* pen_y, int max_width, SDL_Color color) {
+    int start = 0;
+    while (start < length) {
+        int best = start;
+        for (int i = start; i < length;) {
+            i += utf8_char_length(word[i]);
+            if (text_n_width(word + start, i - start) > max_width) break;
+            best = i;
+        }
+        if (best == start) {
+            best = start + utf8_char_length(word[start]);
+            if (best > length) best = length;
+        }
+        char buffer[256];
+        int chunk = best - start;
+        if (chunk >= (int)sizeof(buffer)) chunk = (int)sizeof(buffer) - 1;
+        memcpy(buffer, word + start, (size_t)chunk);
+        buffer[chunk] = '\0';
+        ui_text(renderer, buffer, x, *pen_y, 14, color);
+        start = best;
+        if (start < length) *pen_y += MESSAGE_LINE_HEIGHT;
+    }
+}
+
+/* Draw text wrapped into lines of max_width starting at (x, y). */
+static int draw_wrapped_text(AppRenderer* renderer, const char* text,
+                             int x, int y, int max_width, SDL_Color color) {
+    if (!text || !text[0]) return 1;
+    int lines = 1;
+    int pen_x = x;
+    int pen_y = y;
+    const char* word = text;
+    int space_width = ui_text_width(" ", 14);
+    while (*word) {
+        while (*word == ' ') ++word;
+        if (!*word) break;
+        const char* end = word;
+        while (*end && *end != ' ') end += utf8_char_length(*end);
+        int word_width = text_n_width(word, (int)(end - word));
+        if (word_width > max_width) {
+            if (pen_x > x) {
+                pen_y += MESSAGE_LINE_HEIGHT;
+                ++lines;
+                pen_x = x;
+            }
+            draw_long_word(renderer, word, (int)(end - word), x, &pen_y,
+                           max_width, color);
+            if (pen_y > y + (lines - 1) * MESSAGE_LINE_HEIGHT) {
+                lines = (pen_y - y) / MESSAGE_LINE_HEIGHT + 1;
+            }
+            pen_x = x + word_width % max_width;
+        } else if (pen_x > x && pen_x + space_width + word_width > x + max_width) {
+            pen_y += MESSAGE_LINE_HEIGHT;
+            ++lines;
+            pen_x = x;
+            ui_text(renderer, "", pen_x, pen_y, 14, color);
+            {
+                char buffer[256];
+                int length = (int)(end - word);
+                if (length >= (int)sizeof(buffer)) length = (int)sizeof(buffer) - 1;
+                memcpy(buffer, word, (size_t)length);
+                buffer[length] = '\0';
+                ui_text(renderer, buffer, pen_x, pen_y, 14, color);
+            }
+            pen_x += word_width;
+        } else {
+            char buffer[256];
+            int length = (int)(end - word);
+            if (length >= (int)sizeof(buffer)) length = (int)sizeof(buffer) - 1;
+            memcpy(buffer, word, (size_t)length);
+            buffer[length] = '\0';
+            if (pen_x > x) pen_x += space_width;
+            ui_text(renderer, buffer, pen_x, pen_y, 14, color);
+            pen_x += word_width;
+        }
+        word = end;
+    }
+    return lines;
+}
+
 static void chat_render(Screen* self, AppRenderer* renderer) {
     ScreenChat* screen = (ScreenChat*)self;
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);
@@ -270,19 +517,25 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
     ui_text(renderer, tr("TELEGRAM", "ТЕЛЕГРАМ"), 18, 31, 14, COLOR_MUTED);
 
     int message_count = tg_message_count();
-    int first_message = 0;
     int viewport_bottom = screen->keyboard_visible ? 205 : 380;
-    for (int i = first_message; i < message_count; ++i) {
+    int content_y = 72 - (int)screen->scroll_position;
+    for (int i = 0; i < message_count; ++i) {
         const TgMessage* message = tg_message_at(i);
         if (!message) continue;
-        int y = 72 + i * 48 - (int)screen->scroll_position;
-        if (y + 40 < 62 || y > viewport_bottom) continue;
-        int width = ui_text_width(message->text, 14) + 22;
-        if (width > 420) width = 420;
-        int x = message->outgoing ? 620 - width : 18;
-        ui_round_rect(renderer, (SDL_Rect){x, y, width, 38}, 11,
-                      message->outgoing ? COLOR_SELECTED : COLOR_PANEL);
-        ui_text(renderer, message->text, x + 10, y + 9, 14, COLOR_TEXT);
+        int height = message_height(message);
+        if (content_y + height >= 62 && content_y <= viewport_bottom) {
+            int text_width = ui_text_width(message->text, 14);
+            int width = text_width + 22;
+            if (width > MESSAGE_MAX_TEXT_WIDTH + 22) {
+                width = MESSAGE_MAX_TEXT_WIDTH + 22;
+            }
+            int x = message->outgoing ? 620 - width : 18;
+            ui_round_rect(renderer, (SDL_Rect){x, content_y, width, height - 4}, 11,
+                          message->outgoing ? COLOR_SELECTED : COLOR_PANEL);
+            draw_wrapped_text(renderer, message->text, x + 10, content_y + 7,
+                              MESSAGE_MAX_TEXT_WIDTH, COLOR_TEXT);
+        }
+        content_y += height;
     }
     if (message_count == 0) {
         ui_text(renderer, tr("No messages yet", "Сообщений пока нет"), 22, 100, 14, COLOR_MUTED);
@@ -298,29 +551,59 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
             22, input_y + 10, 14, screen->draft_length ? COLOR_TEXT : COLOR_MUTED);
 
     if (screen->keyboard_visible) {
-        int letters = character_key_count();
-        int count = key_count();
-        for (int i = 0; i < count; ++i) {
-            int row = i / KEY_COLUMNS;
-            int column = i % KEY_COLUMNS;
-            int x = 13 + column * 88;
+        if (screen->selected_key >= key_count_for(screen)) screen->selected_key = 0;
+        KeyLayout layout = current_layout(screen->symbols, preferences_is_russian(),
+                                          screen->uppercase);
+        int selected = screen->selected_key;
+        int index = 0;
+        for (int row = 0; row < KEYBOARD_ROWS; ++row) {
+            int count = layout.counts[row];
+            int gap = 4;
+            int margin = 22;
+            int key_width = (640 - margin * 2 - gap * (count - 1)) / count;
             int y = 264 + row * 28;
-            const char* label;
-            if (i < letters) {
-                label = preferences_is_russian() ? RUSSIAN_KEYS[i] : ENGLISH_KEYS[i];
-                if (preferences_is_russian() && screen->uppercase) {
-                    label = RUSSIAN_UPPER_KEYS[i];
-                }
-                if (screen->symbols) label = SYMBOL_KEYS[i];
-            } else if (i == letters) label = "SPACE";
-            else if (i == letters + 1) label = "DEL";
-            else if (i == letters + 2) label = screen->symbols
-                ? tr("ABC", "АБВ") : "123";
-            else if (i == letters + 3) label = tr("HIDE", "СКРЫТЬ");
-            else label = tr("SEND", "ОТПРАВИТЬ");
-            ui_round_rect(renderer, (SDL_Rect){x, y, 82, 24}, 6,
-                          i == screen->selected_key ? COLOR_BLUE : COLOR_PANEL);
-            ui_text(renderer, label, x + 7, y + 4, 13, COLOR_TEXT);
+            for (int column = 0; column < count; ++column) {
+                int x = margin + column * (key_width + gap);
+                char label_buffer[8];
+                const char* label = key_label(screen, &layout, index,
+                                              label_buffer, sizeof(label_buffer));
+                int text_width = ui_text_width(label, 13);
+                int text_x = x + (key_width - text_width) / 2;
+                if (text_x < x + 2) text_x = x + 2;
+                ui_round_rect(renderer, (SDL_Rect){x, y, key_width, 24}, 6,
+                              index == selected ? COLOR_BLUE : COLOR_PANEL);
+                ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+                ++index;
+            }
+        }
+        /* Service row: wider keys, centered labels. */
+        static const int service_widths[SERVICE_KEY_COUNT] = {150, 80, 80, 116, 130};
+        int russian = preferences_is_russian();
+        const char* labels[SERVICE_KEY_COUNT] = {
+            russian ? "ПРОБЕЛ" : "SPACE",
+            russian ? "УДЛ" : "DEL",
+            screen->symbols ? (russian ? "АБВ" : "ABC") : "123",
+            russian ? "СКРЫТЬ" : "HIDE",
+            russian ? "ОТПР" : "SEND",
+        };
+        int gap = 6;
+        int total_width = 0;
+        for (int i = 0; i < SERVICE_KEY_COUNT; ++i) {
+            total_width += service_widths[i];
+        }
+        total_width += gap * (SERVICE_KEY_COUNT - 1);
+        int x = (640 - total_width) / 2;
+        int y = 264 + KEYBOARD_ROWS * 28;
+        for (int i = 0; i < SERVICE_KEY_COUNT; ++i) {
+            int key_index = layout.total + i;
+            const char* label = labels[i];
+            int text_width = ui_text_width(label, 13);
+            int text_x = x + (service_widths[i] - text_width) / 2;
+            if (text_x < x + 2) text_x = x + 2;
+            ui_round_rect(renderer, (SDL_Rect){x, y, service_widths[i], 24}, 6,
+                          key_index == selected ? COLOR_BLUE : COLOR_PANEL);
+            ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+            x += service_widths[i] + gap;
         }
     }
 

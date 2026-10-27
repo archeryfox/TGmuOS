@@ -22,6 +22,7 @@ add_executable(tgmuos
     src/telegram.c
     src/qr.c
     src/preferences.c
+    src/statusbar.c
 )
 target_include_directories(tgmuos PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
 target_link_libraries(tgmuos PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS} m)

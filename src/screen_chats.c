@@ -1,6 +1,7 @@
 #include "screen_chats.h"
 #include "app.h"
 #include "preferences.h"
+#include "statusbar.h"
 #include "telegram.h"
 #include "ui.h"
 
@@ -67,7 +68,7 @@ static void chats_render(Screen* self, AppRenderer* renderer) {
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 58}, COLOR_HEADER);
     ui_text(renderer, tr("Chats", "Чаты"), 22, 10, 24, COLOR_TEXT);
-    ui_text(renderer, tr("TELEGRAM", "ТЕЛЕГРАМ"), 510, 20, 14, COLOR_BLUE);
+    ui_status_bar(renderer, 618, 23);
 
     for (int row = 0; row < VISIBLE_CHATS; ++row) {
         int index = screen->scroll + row;
