@@ -449,6 +449,101 @@ static void configure_proxy(int proxy_id) {
     send_request(request);
 }
 
+#define MTPROXY_MAX 8
+typedef struct {
+    char name[64];
+    char server[PREFERENCES_PROXY_SERVER_LENGTH];
+    int port;
+    char secret[64];
+} MtprotoProxy;
+static MtprotoProxy mtproto_proxies[MTPROXY_MAX];
+static int mtproto_proxy_count = -1;
+
+/* Lines: name<TAB>server<TAB>port<TAB>secret, secret in base64url form
+ * (as in t.me/webproxy links). Secrets are never logged. */
+static void load_mtproto_proxies(void) {
+    if (mtproto_proxy_count >= 0) return;
+    mtproto_proxy_count = 0;
+    const char* path = getenv("TGMUOS_MTPROTO_CONFIG");
+    if (!path || !*path) path = "/root/.config/tgmuos/mtproto.conf";
+    FILE* file = fopen(path, "r");
+    if (!file) return;
+    char line[768];
+    while (mtproto_proxy_count < MTPROXY_MAX && fgets(line, sizeof(line), file)) {
+        char* newline = strpbrk(line, "\r\n");
+        if (newline) *newline = '\0';
+        char* name = line;
+        char* server = strchr(name, '\t');
+        if (!server) continue;
+        *server++ = '\0';
+        char* port = strchr(server, '\t');
+        if (!port) continue;
+        *port++ = '\0';
+        char* secret = strchr(port, '\t');
+        if (!secret) continue;
+        *secret++ = '\0';
+        if (!*name || !*server || !*secret) continue;
+        char* end = NULL;
+        long value = strtol(port, &end, 10);
+        if (!end || *end || value < 1 || value > 65535) continue;
+        size_t length = strlen(secret);
+        if (length + 4 >= sizeof(mtproto_proxies[0].secret)) continue;
+        char base64[sizeof(mtproto_proxies[0].secret)];
+        size_t out = 0;
+        int valid = 1;
+        for (size_t i = 0; i < length; ++i) {
+            char c = secret[i];
+            if (c == '-') c = '+';
+            else if (c == '_') c = '/';
+            else if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'z') &&
+                     !(c >= 'A' && c <= 'Z')) {
+                valid = 0;
+                break;
+            }
+            base64[out++] = c;
+        }
+        if (!valid) continue;
+        while (out % 4) base64[out++] = '=';
+        base64[out] = '\0';
+        MtprotoProxy* item = &mtproto_proxies[mtproto_proxy_count++];
+        snprintf(item->name, sizeof(item->name), "%.*s",
+                 (int)sizeof(item->name) - 1, name);
+        snprintf(item->server, sizeof(item->server), "%.*s",
+                 (int)sizeof(item->server) - 1, server);
+        item->port = (int)value;
+        snprintf(item->secret, sizeof(item->secret), "%s", base64);
+    }
+    fclose(file);
+}
+
+/* Offer MTProto proxies from mtproto.conf to TDLib. The first one is enabled
+ * only when the SOCKS subscription proxy is not active. */
+static void add_mtproto_proxies(void) {
+    load_mtproto_proxies();
+    if (mtproto_proxy_count <= 0) return;
+    int enable_first = !preferences_proxy_enabled();
+    for (int i = 0; i < mtproto_proxy_count; ++i) {
+        MtprotoProxy* item = &mtproto_proxies[i];
+        char escaped_server[PREFERENCES_PROXY_SERVER_LENGTH * 6];
+        char escaped_secret[sizeof(item->secret) * 6];
+        if (!json_escape(item->server, escaped_server, sizeof(escaped_server)) ||
+            !json_escape(item->secret, escaped_secret, sizeof(escaped_secret))) {
+            continue;
+        }
+        int enable = enable_first && i == 0;
+        char request[2048];
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"addProxy\",\"server\":\"%s\",\"port\":%d,"
+                 "\"enable\":%s,\"type\":{\"@type\":\"proxyTypeMtproto\","
+                 "\"secret\":\"%s\"}}",
+                 escaped_server, item->port, enable ? "true" : "false",
+                 escaped_secret);
+        send_request(request);
+        fprintf(stderr, "TDLib: MTProto proxy added: %s (%s:%d) enable=%d\n",
+                item->name, item->server, item->port, enable);
+    }
+}
+
 static int read_credentials(void) {
     const char* api_id = getenv("TG_API_ID");
     const char* api_hash = getenv("TG_API_HASH");
@@ -783,6 +878,9 @@ static void handle_response(const char* response) {
         char state_name[64];
         token_string(state, state_name, sizeof(state_name));
         handle_authorization(state_name);
+    } else if (strcmp(type_name, "ok") == 0 && request_method &&
+               strcmp(request_method, "setTdlibParameters") == 0) {
+        add_mtproto_proxies();
     } else if (strcmp(type_name, "proxies") == 0 && client.proxy_setup_pending) {
         int proxies = json_member(0, "proxies");
         int proxy_id = 0;

@@ -6,6 +6,15 @@
 ## 2026-10-27
 
 ### Added
+- Эмодзи и флаги: fallback-шрифт Noto Emoji (`res/fonts/NotoEmoji-Regular.ttf`,
+  OFL) — символы, отсутствующие в шрифте интерфейса, рисуются из него
+  (автоопределение по кодпоинту за run'ами текста).
+- MTProto-прокси: `/root/.config/tgmuos/mtproto.conf`
+  (`name<TAB>server<TAB>port<TAB>secret`, secret в base64url из t.me-ссылки).
+  Все прокси передаются TDLib после `setTdlibParameters`; первый включается
+  автоматически, только когда SOCKS-подписка не активна. Секреты не логируются.
+
+### Added
 - «Ping all»: в списке серверов подписки (Settings → Choose server) кнопка
   **X** измеряет TCP-connect latency всех узлов (таймаут 1.5 с на узел),
   пересортировывает список по свежим результатам и сохраняет его приватно.
