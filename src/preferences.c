@@ -379,7 +379,7 @@ int preferences_subscription_server_port(int index) {
 
 /* TCP connect latency in milliseconds, or -1 when unreachable. */
 static int tcp_connect_ping_ms(const char* host, int port, int timeout_ms) {
-    if (!host || !*host || port <= 0) return -1;
+    if (!host || !*host || port <= 0 || port > 65535) return -1;
     char port_text[8];
     snprintf(port_text, sizeof(port_text), "%d", port);
     struct addrinfo hints;
