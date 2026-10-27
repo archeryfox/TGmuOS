@@ -1,5 +1,6 @@
 #include "screen_chat.h"
 #include "app.h"
+#include "images.h"
 #include "preferences.h"
 #include "telegram.h"
 #include "ui.h"
@@ -349,6 +350,8 @@ static void chat_update(Screen* self) {
 
 #define MESSAGE_LINE_HEIGHT 17
 #define MESSAGE_MAX_TEXT_WIDTH 400
+#define PHOTO_MAX_WIDTH 240
+#define PHOTO_MAX_HEIGHT 170
 
 /* Greedy word wrap: returns the number of lines the text needs at width. */
 static int wrapped_line_count(const char* text, int max_width) {
@@ -390,8 +393,36 @@ static int wrapped_line_count(const char* text, int max_width) {
 }
 
 static int message_height(const TgMessage* message) {
-    return wrapped_line_count(message->text, MESSAGE_MAX_TEXT_WIDTH) *
-           MESSAGE_LINE_HEIGHT + 14;
+    int height = 14;
+    if (message->photo_file_id || message->photo_path[0]) {
+        height += 12;
+        if (message->photo_path[0] && images_available()) {
+            SDL_Surface* photo = images_get(message->photo_path);
+            if (photo) {
+                int image_height = photo->h;
+                if (photo->w > PHOTO_MAX_WIDTH) {
+                    image_height = photo->h * PHOTO_MAX_WIDTH / photo->w;
+                }
+                if (image_height > PHOTO_MAX_HEIGHT) {
+                    image_height = PHOTO_MAX_HEIGHT;
+                }
+                height += image_height;
+            } else {
+                height += 40;
+            }
+        } else {
+            height += 40;
+        }
+    }
+    if (message->text[0]) {
+        int max_width = message->photo_file_id || message->photo_path[0]
+            ? PHOTO_MAX_WIDTH : MESSAGE_MAX_TEXT_WIDTH;
+        height += wrapped_line_count(message->text, max_width) *
+                  MESSAGE_LINE_HEIGHT + 4;
+    } else if (!message->photo_file_id && !message->photo_path[0]) {
+        height += MESSAGE_LINE_HEIGHT;
+    }
+    return height;
 }
 
 static int chat_content_height(void) {
@@ -524,16 +555,55 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
         if (!message) continue;
         int height = message_height(message);
         if (content_y + height >= 62 && content_y <= viewport_bottom) {
-            int text_width = ui_text_width(message->text, 14);
-            int width = text_width + 22;
-            if (width > MESSAGE_MAX_TEXT_WIDTH + 22) {
+            int has_photo = message->photo_file_id || message->photo_path[0];
+            SDL_Surface* photo = message->photo_path[0]
+                ? images_get(message->photo_path) : NULL;
+            int image_width = 0;
+            int image_height = 0;
+            if (photo) {
+                image_width = photo->w;
+                image_height = photo->h;
+                if (image_width > PHOTO_MAX_WIDTH) {
+                    image_height = photo->h * PHOTO_MAX_WIDTH / photo->w;
+                    image_width = PHOTO_MAX_WIDTH;
+                }
+                if (image_height > PHOTO_MAX_HEIGHT) {
+                    image_width = image_width * PHOTO_MAX_HEIGHT / image_height;
+                    image_height = PHOTO_MAX_HEIGHT;
+                }
+            }
+            int text_width = message->text[0]
+                ? ui_text_width(message->text, 14) : 0;
+            int wrap_width = has_photo ? PHOTO_MAX_WIDTH : MESSAGE_MAX_TEXT_WIDTH;
+            int width = has_photo
+                ? (image_width > text_width ? image_width : text_width) + 22
+                : text_width + 22;
+            if (!has_photo && width > MESSAGE_MAX_TEXT_WIDTH + 22) {
                 width = MESSAGE_MAX_TEXT_WIDTH + 22;
             }
+            if (width < 60) width = 60;
             int x = message->outgoing ? 620 - width : 18;
             ui_round_rect(renderer, (SDL_Rect){x, content_y, width, height - 4}, 11,
                           message->outgoing ? COLOR_SELECTED : COLOR_PANEL);
-            draw_wrapped_text(renderer, message->text, x + 10, content_y + 7,
-                              MESSAGE_MAX_TEXT_WIDTH, COLOR_TEXT);
+            int inside_y = content_y + 7;
+            if (has_photo) {
+                if (photo) {
+                    ui_blit_surface(renderer, photo, x + 11, inside_y,
+                                    image_width, image_height);
+                    inside_y += image_height + 5;
+                } else {
+                    const char* waiting = tr("Loading photo…", "Загрузка фото…");
+                    int label_width = ui_text_width(waiting, 14);
+                    int label_x = x + (width - label_width) / 2;
+                    if (label_x < x + 8) label_x = x + 8;
+                    ui_text(renderer, waiting, label_x, inside_y + 12, 14, COLOR_MUTED);
+                    inside_y += 40;
+                }
+            }
+            if (message->text[0]) {
+                draw_wrapped_text(renderer, message->text, x + 10, inside_y,
+                                  wrap_width, COLOR_TEXT);
+            }
         }
         content_y += height;
     }

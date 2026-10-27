@@ -325,3 +325,15 @@ int ui_text_width(const char* text, int size) {
     }
     return total;
 }
+
+void ui_blit_surface(AppRenderer* renderer, const SDL_Surface* surface,
+                     int x, int y, int w, int h) {
+    if (!renderer || !surface || w <= 0 || h <= 0) return;
+    int dest_x = scale_x(renderer, x);
+    int dest_y = scale_y(renderer, y);
+    int dest_width = w * renderer->width / 640;
+    int dest_height = h * renderer->height / 480;
+    if (dest_width < 1) dest_width = 1;
+    if (dest_height < 1) dest_height = 1;
+    blit_rgba(renderer, surface, dest_x, dest_y, dest_width, dest_height);
+}

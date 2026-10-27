@@ -34,6 +34,20 @@ static void chats_handle(Screen* self, const SDL_Event* event) {
                 screen->scroll = screen->selected - VISIBLE_CHATS + 1;
             }
             break;
+        case SDLK_LEFT:
+            if (tg_current_folder() > 0) {
+                tg_set_folder(tg_current_folder() - 1);
+                ((ScreenChats*)self)->selected = 0;
+                ((ScreenChats*)self)->scroll = 0;
+            }
+            break;
+        case SDLK_RIGHT:
+            if (tg_current_folder() < tg_folder_count()) {
+                tg_set_folder(tg_current_folder() + 1);
+                ((ScreenChats*)self)->selected = 0;
+                ((ScreenChats*)self)->scroll = 0;
+            }
+            break;
         case SDLK_RETURN:
         case SDLK_SPACE:
             if (tg_chat_count() > screen->selected) {
@@ -70,12 +84,28 @@ static void chats_render(Screen* self, AppRenderer* renderer) {
     ui_text(renderer, tr("Chats", "Чаты"), 22, 10, 24, COLOR_TEXT);
     ui_status_bar(renderer, 618, 23);
 
+    /* Folder tabs (LEFT/RIGHT switches): main list plus TDLib chat folders. */
+    int folder_total = tg_folder_count() + 1;
+    int tab_x = 12;
+    for (int index = 0; index < folder_total && tab_x < 560; ++index) {
+        const char* title = index == 0 ? tr("All", "Все")
+                                       : tg_folder_title(index);
+        int title_width = ui_text_width(title, 13);
+        int tab_width = title_width + 18;
+        if (tab_width < 44) tab_width = 44;
+        ui_round_rect(renderer, (SDL_Rect){tab_x, 62, tab_width, 20}, 8,
+                      index == tg_current_folder() ? COLOR_BLUE : COLOR_ROW);
+        ui_text(renderer, title, tab_x + 9, 65, 13,
+                index == tg_current_folder() ? COLOR_TEXT : COLOR_MUTED);
+        tab_x += tab_width + 6;
+    }
+
     for (int row = 0; row < VISIBLE_CHATS; ++row) {
         int index = screen->scroll + row;
         const TgChat* chat = tg_chat_at(index);
         if (!chat) break;
 
-        int y = 72 + row * 68;
+        int y = 88 + row * 68;
         ui_round_rect(renderer, (SDL_Rect){12, y, 616, 60}, 15,
                       index == screen->selected ? COLOR_SELECTED : COLOR_ROW);
         ui_round_rect(renderer, (SDL_Rect){24, y + 12, 36, 36}, 12,
@@ -85,13 +115,14 @@ static void chats_render(Screen* self, AppRenderer* renderer) {
     }
     if (tg_chat_count() == 0) {
         ui_text(renderer, tr("Loading Telegram chats…", "Загрузка чатов Telegram…"),
-                28, 100, 18, COLOR_MUTED);
+                28, 116, 18, COLOR_MUTED);
     }
 
     ui_fill(renderer, (SDL_Rect){0, 430, 640, 50}, COLOR_HEADER);
     ui_text(renderer, tr("A: OPEN", "A: ОТКРЫТЬ"), 18, 446, 14, COLOR_TEXT);
-    ui_text(renderer, tr("START: SETTINGS", "START: НАСТРОЙКИ"), 156, 446, 14, COLOR_TEXT);
-    ui_text(renderer, tr("B: BACK", "B: НАЗАД"), 500, 446, 14, COLOR_MUTED);
+    ui_text(renderer, tr("LEFT/RIGHT: FOLDER", "ВЛЕВО/ВПРАВО: ПАПКА"), 156, 446, 14, COLOR_TEXT);
+    ui_text(renderer, tr("START: SETTINGS", "START: НАСТРОЙКИ"), 420, 446, 14, COLOR_TEXT);
+    ui_text(renderer, tr("B: BACK", "B: НАЗАД"), 556, 446, 14, COLOR_MUTED);
 }
 
 static void chats_destroy(Screen* self) {

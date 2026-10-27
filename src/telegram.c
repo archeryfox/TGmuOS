@@ -4,6 +4,8 @@
 #include "preferences.h"
 #include "qr.h"
 
+#include <SDL2/SDL.h>
+
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -75,6 +77,13 @@ static struct {
     int chat_count;
     TgMessage messages[TG_MAX_MESSAGES];
     int message_count;
+    struct {
+        int id;
+        char title[64];
+    } folders[8];
+    int folder_count;
+    int current_folder;
+    uint32_t last_photo_request_ms;
 } client;
 
 static const char* json_source;
@@ -746,8 +755,99 @@ void tg_start(void) {
 }
 
 static void request_chats(void) {
-    send_request("{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListMain\"},\"limit\":50}");
+    char request[160];
+    if (client.current_folder > 0 &&
+            client.current_folder <= client.folder_count) {
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListFolder\","
+                 "\"chat_folder_id\":%d},\"limit\":50}",
+                 client.folders[client.current_folder - 1].id);
+    } else {
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListMain\"},\"limit\":50}");
+    }
+    send_request(request);
     client.requested_chats = 1;
+}
+
+/* Extract a displayable text from any message content: body text, media
+ * caption, file name, or a type label — messages are never dropped. */
+static void extract_content_text(int content, char* text, size_t capacity) {
+    text[0] = '\0';
+    if (content < 0) return;
+    int type = json_member(content, "@type");
+    char name[64];
+    token_string(type, name, sizeof(name));
+    if (strcmp(name, "messageText") == 0) {
+        token_string(json_member(json_member(content, "text"), "text"),
+                     text, capacity);
+    } else if (strcmp(name, "messagePhoto") == 0 ||
+               strcmp(name, "messageVideo") == 0 ||
+               strcmp(name, "messageAnimation") == 0) {
+        token_string(json_member(json_member(content, "caption"), "text"),
+                     text, capacity);
+    } else if (strcmp(name, "messageDocument") == 0 ||
+               strcmp(name, "messageAudio") == 0) {
+        int document = json_member(content, "document");
+        token_string(json_member(document, "file_name"), text, capacity);
+        if (!text[0]) {
+            token_string(json_member(json_member(content, "caption"), "text"),
+                         text, capacity);
+        }
+        if (!text[0]) snprintf(text, capacity, "%s", name + 7);
+    } else if (strcmp(name, "messageSticker") == 0) {
+        int sticker = json_member(content, "sticker");
+        token_string(json_member(sticker, "emoji"), text, capacity);
+        if (!text[0]) snprintf(text, capacity, "Sticker");
+    } else if (strcmp(name, "messageVoiceNote") == 0) {
+        snprintf(text, capacity, "Voice message");
+    } else if (strcmp(name, "messageVideoNote") == 0) {
+        snprintf(text, capacity, "Video message");
+    } else if (strcmp(name, "messageLocation") == 0) {
+        snprintf(text, capacity, "Location");
+    } else if (strcmp(name, "messageContact") == 0) {
+        snprintf(text, capacity, "Contact");
+    } else if (strcmp(name, "messagePoll") == 0) {
+        int poll = json_member(content, "poll");
+        token_string(json_member(poll, "question"), text, capacity);
+        if (!text[0]) snprintf(text, capacity, "Poll");
+    } else if (name[0]) {
+        snprintf(text, capacity, "[%s]", name);
+    }
+}
+
+/* For messagePhoto: pick the size closest to 360px wide and remember its
+ * file id / completed local path so the UI can download and display it. */
+static void extract_photo(int content, TgMessage* message) {
+    if (content < 0) return;
+    int type = json_member(content, "@type");
+    char name[32];
+    token_string(type, name, sizeof(name));
+    if (strcmp(name, "messagePhoto") != 0) return;
+    int photo = json_member(content, "photo");
+    int sizes = json_member(photo, "sizes");
+    int best = -1;
+    long best_distance = 0;
+    for (int i = 0; i < json_array_size(sizes); ++i) {
+        int size = json_array_item(sizes, i);
+        long width = token_integer(json_member(size, "width"));
+        long distance = width > 360 ? width - 360 : 360 - width;
+        if (best < 0 || distance < best_distance) {
+            best = size;
+            best_distance = distance;
+        }
+    }
+    if (best < 0) return;
+    int file = json_member(best, "photo");
+    int file_id = (int)token_integer(json_member(file, "id"));
+    if (!file_id) return;
+    message->photo_file_id = file_id;
+    int local = json_member(file, "local");
+    int completed = json_member(local, "is_download_completed");
+    if (completed >= 0 && json_source[json_tokens[completed].start] == 't') {
+        token_string(json_member(local, "path"), message->photo_path,
+                     sizeof(message->photo_path));
+    }
 }
 
 static void handle_authorization(const char* state) {
@@ -831,20 +931,30 @@ static void update_chat(int object) {
     TgChat* chat = &client.chats[index];
     chat->id = id;
     token_string(json_member(object, "title"), chat->title, sizeof(chat->title));
-    int last = json_member(object, "last_message");
-    int content = json_member(last, "content");
-    int text = json_member(content, "text");
-    token_string(json_member(text, "text"), chat->preview, sizeof(chat->preview));
+    extract_content_text(json_member(json_member(object, "last_message"), "content"),
+                         chat->preview, sizeof(chat->preview));
+}
+
+static void reset_message_media(TgMessage* message) {
+    message->photo_file_id = 0;
+    message->photo_pending = 0;
+    message->photo_path[0] = '\0';
+}
+
+static void fill_message(TgMessage* message, int object) {
+    reset_message_media(message);
+    message->id = token_integer(json_member(object, "id"));
+    int outgoing = json_member(object, "is_outgoing");
+    message->outgoing = outgoing >= 0 &&
+                        json_source[json_tokens[outgoing].start] == 't';
+    int content = json_member(object, "content");
+    extract_content_text(content, message->text, sizeof(message->text));
+    extract_photo(content, message);
 }
 
 static void update_message(int object) {
     int64_t chat_id = token_integer(json_member(object, "chat_id"));
     if (!chat_id || chat_id != client.selected_chat) return;
-    int content = json_member(object, "content");
-    int text = json_member(content, "text");
-    int text_value = json_member(text, "text");
-    if (text_value < 0) return;
-
     int64_t id = token_integer(json_member(object, "id"));
     for (int i = 0; i < client.message_count; ++i) {
         if (client.messages[i].id == id) return;
@@ -855,11 +965,7 @@ static void update_message(int object) {
         --client.message_count;
     }
     TgMessage* message = &client.messages[client.message_count++];
-    message->id = id;
-    int outgoing = json_member(object, "is_outgoing");
-    message->outgoing = outgoing >= 0 &&
-                        json_source[json_tokens[outgoing].start] == 't';
-    token_string(text_value, message->text, sizeof(message->text));
+    fill_message(message, object);
 }
 
 static void handle_response(const char* response) {
@@ -957,10 +1063,6 @@ static void handle_response(const char* response) {
                 int64_t id = token_integer(json_member(object, "id"));
                 int64_t chat_id = token_integer(json_member(object, "chat_id"));
                 if (!id || chat_id != client.selected_chat) continue;
-                int content = json_member(object, "content");
-                int text = json_member(content, "text");
-                int value = json_member(text, "text");
-                if (value < 0) continue;
                 int duplicate = 0;
                 for (int j = 0; j < client.message_count; ++j) {
                     if (client.messages[j].id == id) duplicate = 1;
@@ -972,11 +1074,7 @@ static void handle_response(const char* response) {
                 memmove(client.messages + 1, client.messages,
                         sizeof(client.messages[0]) * (size_t)client.message_count);
                 TgMessage* message = &client.messages[0];
-                message->id = id;
-                int outgoing = json_member(object, "is_outgoing");
-                message->outgoing = outgoing >= 0 &&
-                                    json_source[json_tokens[outgoing].start] == 't';
-                token_string(value, message->text, sizeof(message->text));
+                fill_message(message, object);
                 ++client.message_count;
             }
             if (count < 30 || client.message_count == previous_count) {
@@ -987,6 +1085,48 @@ static void handle_response(const char* response) {
         for (int i = count - 1; i >= 0; --i) {
             update_message(json_array_item(messages, i));
         }
+        }
+    } else if (strcmp(type_name, "updateChatFolders") == 0) {
+        int folders = json_member(0, "chat_folders");
+        client.folder_count = 0;
+        for (int i = 0; i < json_array_size(folders) &&
+                        client.folder_count < (int)(sizeof(client.folders) /
+                                                    sizeof(client.folders[0]));
+             ++i) {
+            int info = json_array_item(folders, i);
+            int name = json_member(info, "name");
+            char title[64];
+            token_string(json_member(name, "text"), title, sizeof(title));
+            if (!title[0]) continue;
+            client.folders[client.folder_count].id =
+                (int)token_integer(json_member(info, "id"));
+            snprintf(client.folders[client.folder_count].title,
+                     sizeof(client.folders[client.folder_count].title),
+                     "%s", title);
+            ++client.folder_count;
+        }
+        if (client.current_folder > client.folder_count) {
+            client.current_folder = 0;
+        }
+        fprintf(stderr, "TDLib: chat folders updated: %d\n", client.folder_count);
+    } else if (strcmp(type_name, "updateFile") == 0) {
+        int file = json_member(0, "file");
+        int file_id = (int)token_integer(json_member(file, "id"));
+        if (file_id) {
+            int local = json_member(file, "local");
+            int completed = json_member(local, "is_download_completed");
+            int done = completed >= 0 &&
+                       json_source[json_tokens[completed].start] == 't';
+            for (int i = 0; i < client.message_count; ++i) {
+                if (client.messages[i].photo_file_id == file_id) {
+                    client.messages[i].photo_pending = 0;
+                    if (done) {
+                        token_string(json_member(local, "path"),
+                                     client.messages[i].photo_path,
+                                     sizeof(client.messages[i].photo_path));
+                    }
+                }
+            }
         }
     } else if (strcmp(type_name, "error") == 0) {
         int code = (int)token_integer(json_member(0, "code"));
@@ -1049,6 +1189,34 @@ static void handle_response(const char* response) {
     }
 }
 
+/* Request downloads for photos in the visible tail of the history,
+ * throttled so the chat history keeps priority over media. */
+static void pump_photo_downloads(void) {
+    if (!client.running || client.state != TgStateReady) return;
+    uint32_t now = SDL_GetTicks();
+    if (client.last_photo_request_ms &&
+            now - client.last_photo_request_ms < 700) {
+        return;
+    }
+    int start = client.message_count > 12 ? client.message_count - 12 : 0;
+    for (int i = client.message_count - 1; i >= start; --i) {
+        TgMessage* message = &client.messages[i];
+        if (message->photo_file_id && !message->photo_path[0] &&
+                !message->photo_pending) {
+            char request[160];
+            snprintf(request, sizeof(request),
+                     "{\"@type\":\"downloadFile\",\"file_id\":%d,"
+                     "\"priority\":24,\"offset\":0,\"limit\":0,"
+                     "\"synchronous\":false}",
+                     message->photo_file_id);
+            send_request(request);
+            message->photo_pending = 1;
+            client.last_photo_request_ms = now;
+            break;
+        }
+    }
+}
+
 void tg_poll(void) {
     if (!client.running || !client.receive) return;
     for (int i = 0; i < 8; ++i) {
@@ -1056,6 +1224,7 @@ void tg_poll(void) {
         if (!response) break;
         handle_response(response);
     }
+    pump_photo_downloads();
 }
 
 void tg_stop(void) {
@@ -1237,6 +1406,33 @@ int tg_chat_count(void) {
 
 const TgChat* tg_chat_at(int index) {
     return index >= 0 && index < client.chat_count ? &client.chats[index] : NULL;
+}
+
+int tg_folder_count(void) {
+    return client.folder_count;
+}
+
+const char* tg_folder_title(int index) {
+    if (index <= 0 || index > client.folder_count) return "";
+    return client.folders[index - 1].title;
+}
+
+int tg_current_folder(void) {
+    return client.current_folder;
+}
+
+void tg_set_folder(int index) {
+    if (index < 0 || index > client.folder_count ||
+            index == client.current_folder) {
+        return;
+    }
+    client.current_folder = index;
+    client.chat_count = 0;
+    client.requested_chats = 0;
+    client.selected_chat = 0;
+    client.message_count = 0;
+    client.older_history_exhausted = 0;
+    if (client.state == TgStateReady) request_chats();
 }
 
 int64_t tg_selected_chat_id(void) {

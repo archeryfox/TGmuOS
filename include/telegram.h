@@ -27,6 +27,9 @@ typedef struct {
     int64_t id;
     int outgoing;
     char text[TG_TEXT_LENGTH];
+    int photo_file_id;
+    int photo_pending;
+    char photo_path[256];
 } TgMessage;
 
 void tg_start(void);
@@ -42,6 +45,10 @@ void tg_load_older_messages(void);
 const char* tg_last_error(void);
 int tg_chat_count(void);
 const TgChat* tg_chat_at(int index);
+int tg_folder_count(void);
+const char* tg_folder_title(int index);
+int tg_current_folder(void);
+void tg_set_folder(int index);
 int64_t tg_selected_chat_id(void);
 const char* tg_selected_chat_title(void);
 int tg_message_count(void);
