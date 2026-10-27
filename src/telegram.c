@@ -691,11 +691,11 @@ static void handle_authorization(const char* state) {
             return;
         }
         snprintf(request, sizeof(request),
-                 "{\"@type\":\"setEncryptionKey\",\"encryption_key\":\"%s\"}",
+                 "{\"@type\":\"checkDatabaseEncryptionKey\",\"encryption_key\":\"%s\"}",
                  encoded_database_key);
         send_request(request);
         set_status(TgStateInitializing, "Initializing Telegram database…", "");
-        fprintf(stderr, "TDLib: sent setEncryptionKey\n");
+        fprintf(stderr, "TDLib: sent checkDatabaseEncryptionKey\n");
     } else if (strcmp(state, "authorizationStateWaitPhoneNumber") == 0) {
         set_status(TgStatePhone, "Sign in to Telegram", "Enter your phone number");
     } else if (strcmp(state, "authorizationStateWaitCode") == 0) {
