@@ -2,6 +2,7 @@
 
 #include <SDL2/SDL_ttf.h>
 
+#include <math.h>
 #include <stdio.h>
 
 static const int FONT_SIZES[] = {14, 18, 24};
@@ -97,9 +98,11 @@ void ui_round_rect(AppRenderer* renderer, SDL_Rect rect, int radius, SDL_Color c
     if (radius * 2 > rect.w) radius = rect.w / 2;
     if (radius * 2 > rect.h) radius = rect.h / 2;
     for (int y = 0; y < radius; ++y) {
-        int dy = radius - y - 1;
-        int inset = radius;
-        while (inset > 0 && inset * inset + dy * dy > radius * radius) --inset;
+        /* Distance from the row to the straight part; the top row (t = radius)
+         * touches the corner circle at x = radius, the last corner row
+         * (t = 1) is nearly full width. */
+        int t = radius - y;
+        int inset = radius - (int)sqrt((double)(radius * radius - t * t));
         ui_fill(renderer, (SDL_Rect){rect.x + inset, rect.y + y, rect.w - inset * 2, 1}, color);
         ui_fill(renderer, (SDL_Rect){rect.x + inset, rect.y + rect.h - y - 1,
                                      rect.w - inset * 2, 1}, color);

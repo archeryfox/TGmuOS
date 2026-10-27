@@ -114,6 +114,8 @@ class VlessSubscriptionTests(unittest.TestCase):
             "id": "a" * 16,
             "name": "Node One",
             "ping": 24,
+            "host": "node.example.test",
+            "port": 443,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "servers.tsv"
@@ -122,7 +124,8 @@ class VlessSubscriptionTests(unittest.TestCase):
             try:
                 subscription.write_server_list([server])
                 self.assertEqual(path.read_text(encoding="utf-8"),
-                                 "{}\t24\tNode One\n".format("a" * 16))
+                                 "{}\t24\tNode One\tnode.example.test\t443\n"
+                                 .format("a" * 16))
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             finally:
                 subscription.SERVER_LIST = original_path

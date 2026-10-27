@@ -68,6 +68,8 @@ static void load_servers(void) {
         char* ping_end = strchr(ping, '\t');
         if (!ping_end) continue;
         *ping_end++ = '\0';
+        char* name_end = strchr(ping_end, '\t');
+        if (name_end) *name_end = '\0';
         ping_end[strcspn(ping_end, "\r\n")] = '\0';
 
         if (strlen(id) != SERVER_ID_LENGTH - 1) continue;

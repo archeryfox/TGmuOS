@@ -7,6 +7,7 @@
 #define PREFERENCES_SUBSCRIPTION_SERVER_COUNT 64
 #define PREFERENCES_SUBSCRIPTION_SERVER_ID_LENGTH 17
 #define PREFERENCES_SUBSCRIPTION_SERVER_NAME_LENGTH 128
+#define PREFERENCES_SUBSCRIPTION_SERVER_HOST_LENGTH 256
 
 int preferences_is_russian(void);
 int preferences_animations_enabled(void);
@@ -27,6 +28,9 @@ int preferences_subscription_server_count(void);
 const char* preferences_subscription_server_id(int index);
 const char* preferences_subscription_server_name(int index);
 int preferences_subscription_server_ping(int index);
+const char* preferences_subscription_server_host(int index);
+int preferences_subscription_server_port(int index);
+int preferences_ping_all_servers(int timeout_ms, int* reachable);
 const char* preferences_subscription_selected_server(void);
 int preferences_set_subscription_server(const char* server_id);
 const char* tr(const char* english, const char* russian);

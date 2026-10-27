@@ -77,6 +77,34 @@ static void settings_handle(Screen* self, const SDL_Event* event) {
                 if (screen->selected_server + 1 < count) ++screen->selected_server;
                 keep_server_visible(screen);
                 return;
+            case SDLK_x: {
+                char current_id[PREFERENCES_SUBSCRIPTION_SERVER_ID_LENGTH] = "";
+                if (screen->selected_server < count) {
+                    snprintf(current_id, sizeof(current_id), "%s",
+                             preferences_subscription_server_id(
+                                 screen->selected_server));
+                }
+                int reachable = 0;
+                int pinged = preferences_ping_all_servers(1500, &reachable);
+                if (pinged < 0) {
+                    SDL_Log("Unable to save the server list after ping");
+                } else {
+                    SDL_Log("Pinged %d servers, %d reachable",
+                            pinged, reachable);
+                }
+                int new_count = preferences_subscription_server_count();
+                screen->selected_server = 0;
+                for (int i = 0; i < new_count; ++i) {
+                    if (strcmp(preferences_subscription_server_id(i),
+                               current_id) == 0) {
+                        screen->selected_server = i;
+                        break;
+                    }
+                }
+                screen->server_scroll = 0;
+                keep_server_visible(screen);
+                return;
+            }
             case SDLK_RETURN:
             case SDLK_SPACE:
                 if (count > 0) {
@@ -169,8 +197,8 @@ static void settings_render(Screen* self, AppRenderer* renderer) {
             ui_text(renderer, ping_label, 604 - ping_width, y + 14, 13, COLOR_MUTED);
         }
         ui_fill(renderer, (SDL_Rect){0, 438, 640, 42}, COLOR_HEADER);
-        ui_text(renderer, tr("A: save server  B: back",
-                             "A: сохранить сервер  B: назад"),
+        ui_text(renderer, tr("A: save server  X: ping all  B: back",
+                             "A: сохранить сервер  X: пинг всех  B: назад"),
                 18, 451, 13, COLOR_TEXT);
         return;
     }

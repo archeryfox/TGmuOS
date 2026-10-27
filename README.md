@@ -84,7 +84,11 @@ the next sing-box profile refresh.
 Use **Choose server** in Settings to browse subscription nodes sorted by TCP
 connection latency; unreachable nodes appear last. Selecting a node saves it
 privately for the next sing-box profile refresh. Leave the setting on
-**Automatic** to let sing-box choose a responsive node.
+**Automatic** to let sing-box choose a responsive node. Inside the server
+list, press **X** to re-measure latency for every node (TCP connect ping,
+1.5 s timeout each); the list is re-sorted by the fresh results and saved
+privately. Node addresses are stored next to the list so the app can ping
+without a subscription refresh.
 
 The supplied subscription is installed as the device-local default, not in
 the source tree. The importer accepts VLESS links using TCP with TLS or

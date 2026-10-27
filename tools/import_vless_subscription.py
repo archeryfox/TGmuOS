@@ -158,6 +158,8 @@ def sort_servers_by_ping(nodes):
             "name": node["_name"],
             "ping": ping,
             "tag": node["tag"],
+            "host": node["server"],
+            "port": node["server_port"],
         })
     return sorted(servers, key=lambda server: (
         server["ping"] is None,
@@ -185,8 +187,9 @@ def write_server_list(servers):
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
         for server in servers:
             ping = str(server["ping"]) if server["ping"] is not None else "-1"
-            output.write("{}\t{}\t{}\n".format(
-                server["id"], ping, server["name"]
+            output.write("{}\t{}\t{}\t{}\t{}\n".format(
+                server["id"], ping, server["name"],
+                server.get("host") or "", server.get("port") or "",
             ))
         output.flush()
         os.fsync(output.fileno())

@@ -7,6 +7,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <time.h>
 
 static int russian = 1;
 static int animations = 1;
@@ -18,11 +24,14 @@ static int subscription_enabled;
 static int subscription_configured;
 static char subscription_url[2048];
 static char subscription_selected_server[PREFERENCES_SUBSCRIPTION_SERVER_ID_LENGTH];
-static struct {
+typedef struct {
     char id[PREFERENCES_SUBSCRIPTION_SERVER_ID_LENGTH];
     char name[PREFERENCES_SUBSCRIPTION_SERVER_NAME_LENGTH];
+    char host[PREFERENCES_SUBSCRIPTION_SERVER_HOST_LENGTH];
+    int port;
     int ping;
-} subscription_servers[PREFERENCES_SUBSCRIPTION_SERVER_COUNT];
+} SubscriptionServer;
+static SubscriptionServer subscription_servers[PREFERENCES_SUBSCRIPTION_SERVER_COUNT];
 static int subscription_server_count;
 static int subscription_servers_loaded;
 static int proxy_port = 1080;
@@ -138,7 +147,7 @@ static void load_subscription_servers(void) {
     subscription_servers_loaded = 1;
     FILE* file = fopen(subscription_servers_path(), "r");
     if (!file) return;
-    char line[512];
+    char line[768];
     while (subscription_server_count < PREFERENCES_SUBSCRIPTION_SERVER_COUNT &&
            fgets(line, sizeof(line), file)) {
         char* id = line;
@@ -149,7 +158,22 @@ static void load_subscription_servers(void) {
         char* ping_end = strchr(ping, '\t');
         if (!ping_end) continue;
         *ping_end++ = '\0';
-        char* newline = strpbrk(ping_end, "\r\n");
+        char* name = ping_end;
+        char* name_end = strchr(name, '\t');
+        char* host = NULL;
+        char* port = NULL;
+        if (name_end) {
+            *name_end++ = '\0';
+            host = name_end;
+            char* host_end = strchr(host, '\t');
+            if (host_end) {
+                *host_end++ = '\0';
+                port = host_end;
+                char* port_end = strpbrk(port, "\t\r\n");
+                if (port_end) *port_end = '\0';
+            }
+        }
+        char* newline = strpbrk(name, "\r\n");
         if (newline) *newline = '\0';
         if (strlen(id) != PREFERENCES_SUBSCRIPTION_SERVER_ID_LENGTH - 1) continue;
         char* end = NULL;
@@ -161,7 +185,20 @@ static void load_subscription_servers(void) {
                  (int)sizeof(subscription_servers[index].id) - 1, id);
         snprintf(subscription_servers[index].name,
                  sizeof(subscription_servers[index].name), "%.*s",
-                 (int)sizeof(subscription_servers[index].name) - 1, ping_end);
+                 (int)sizeof(subscription_servers[index].name) - 1, name);
+        subscription_servers[index].host[0] = '\0';
+        subscription_servers[index].port = 0;
+        if (host && *host) {
+            snprintf(subscription_servers[index].host,
+                     sizeof(subscription_servers[index].host), "%.*s",
+                     (int)sizeof(subscription_servers[index].host) - 1, host);
+            if (port && *port) {
+                long value = strtol(port, &end, 10);
+                if (end && *end == '\0' && value > 0 && value <= 65535) {
+                    subscription_servers[index].port = (int)value;
+                }
+            }
+        }
         subscription_servers[index].ping = (int)latency;
     }
     fclose(file);
@@ -326,6 +363,150 @@ int preferences_subscription_server_ping(int index) {
     load_subscription_servers();
     return index >= 0 && index < subscription_server_count
         ? subscription_servers[index].ping : -1;
+}
+
+const char* preferences_subscription_server_host(int index) {
+    load_subscription_servers();
+    return index >= 0 && index < subscription_server_count
+        ? subscription_servers[index].host : "";
+}
+
+int preferences_subscription_server_port(int index) {
+    load_subscription_servers();
+    return index >= 0 && index < subscription_server_count
+        ? subscription_servers[index].port : 0;
+}
+
+/* TCP connect latency in milliseconds, or -1 when unreachable. */
+static int tcp_connect_ping_ms(const char* host, int port, int timeout_ms) {
+    if (!host || !*host || port <= 0) return -1;
+    char port_text[8];
+    snprintf(port_text, sizeof(port_text), "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
+    struct addrinfo* addresses = NULL;
+    if (getaddrinfo(host, port_text, &hints, &addresses) != 0) return -1;
+    int latency = -1;
+    for (struct addrinfo* item = addresses; item && latency < 0;
+         item = item->ai_next) {
+        int fd = socket(item->ai_family, item->ai_socktype, item->ai_protocol);
+        if (fd < 0) continue;
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(fd);
+            continue;
+        }
+        struct timespec started, finished;
+        clock_gettime(CLOCK_MONOTONIC, &started);
+        int in_progress = 0;
+        if (connect(fd, item->ai_addr, item->ai_addrlen) == 0) {
+            latency = 0;
+        } else if (errno == EINPROGRESS) {
+            in_progress = 1;
+        }
+        if (in_progress) {
+            fd_set writable;
+            FD_ZERO(&writable);
+            FD_SET(fd, &writable);
+            struct timeval timeout = {
+                timeout_ms / 1000,
+                (long)(timeout_ms % 1000) * 1000,
+            };
+            if (select(fd + 1, NULL, &writable, NULL, &timeout) > 0) {
+                int error = 0;
+                socklen_t length = sizeof(error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 &&
+                        error == 0) {
+                    latency = 0;
+                }
+            }
+        }
+        clock_gettime(CLOCK_MONOTONIC, &finished);
+        close(fd);
+        if (latency == 0) {
+            long elapsed = (finished.tv_sec - started.tv_sec) * 1000 +
+                           (finished.tv_nsec - started.tv_nsec) / 1000000;
+            latency = elapsed < 1 ? 1 : (int)elapsed;
+        }
+    }
+    freeaddrinfo(addresses);
+    return latency;
+}
+
+/* Stable insertion sort: reachable servers by ascending ping, offline last. */
+static void sort_subscription_servers_by_ping(void) {
+    for (int i = 1; i < subscription_server_count; ++i) {
+        SubscriptionServer current = subscription_servers[i];
+        int j = i - 1;
+        while (j >= 0) {
+            int a = subscription_servers[j].ping;
+            int b = current.ping;
+            int swap = (a < 0 && b >= 0) ||
+                       (a >= 0 && b >= 0 && a > b);
+            if (!swap) break;
+            subscription_servers[j + 1] = subscription_servers[j];
+            --j;
+        }
+        subscription_servers[j + 1] = current;
+    }
+}
+
+static int save_subscription_servers(void) {
+    const char* path = subscription_servers_path();
+    char temporary[512];
+    snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+    FILE* file = fopen(temporary, "w");
+    if (!file) {
+        perror("open servers list");
+        return 0;
+    }
+    if (fchmod(fileno(file), 0600) < 0) {
+        perror("secure servers list");
+        fclose(file);
+        return 0;
+    }
+    for (int i = 0; i < subscription_server_count; ++i) {
+        if (fprintf(file, "%s\t%d\t%s\t%s\t%d\n",
+                    subscription_servers[i].id,
+                    subscription_servers[i].ping,
+                    subscription_servers[i].name,
+                    subscription_servers[i].host,
+                    subscription_servers[i].port) < 0) {
+            perror("write servers list");
+            fclose(file);
+            return 0;
+        }
+    }
+    if (fclose(file) != 0) {
+        perror("close servers list");
+        return 0;
+    }
+    if (rename(temporary, path) != 0) {
+        perror("replace servers list");
+        return 0;
+    }
+    return 1;
+}
+
+int preferences_ping_all_servers(int timeout_ms, int* reachable) {
+    load_subscription_servers();
+    int count = 0;
+    if (reachable) *reachable = 0;
+    for (int i = 0; i < subscription_server_count; ++i) {
+        int latency = tcp_connect_ping_ms(subscription_servers[i].host,
+                                          subscription_servers[i].port,
+                                          timeout_ms);
+        subscription_servers[i].ping = latency;
+        if (latency >= 0) {
+            ++count;
+        }
+    }
+    sort_subscription_servers_by_ping();
+    if (!save_subscription_servers()) return -1;
+    if (reachable) *reachable = count;
+    return subscription_server_count;
 }
 
 const char* preferences_subscription_selected_server(void) {

@@ -202,7 +202,7 @@ def read_servers():
     with open(SERVER_LIST, encoding="utf-8") as source:
         for line in source:
             fields = line.rstrip("\r\n").split("\t")
-            if len(fields) == 3 and len(fields[0]) == 16:
+            if len(fields) >= 3 and len(fields[0]) == 16:
                 rows.append(fields[0])
     return set(rows)
 

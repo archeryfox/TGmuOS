@@ -24,7 +24,7 @@ add_executable(tgmuos
     src/preferences.c
 )
 target_include_directories(tgmuos PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
-target_link_libraries(tgmuos PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(tgmuos PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS} m)
 
 add_executable(muvpn
     muvpn/src/main.c
@@ -33,7 +33,7 @@ add_executable(muvpn
     src/renderer.c
 )
 target_include_directories(muvpn PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
-target_link_libraries(muvpn PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES})
+target_link_libraries(muvpn PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} m)
 
 include(CTest)
 if(BUILD_TESTING)
