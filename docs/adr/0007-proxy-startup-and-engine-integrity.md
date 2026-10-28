@@ -53,6 +53,23 @@ build output, tests, commits, release notes, or this ADR.
 - The repaired engine still needs real profile and Telegram checks. Restoring
   the executable alone does not prove that a remote VLESS node is reachable.
 
+## Resolution (same day, 23:3x)
+
+The device-side sing-box binary never bound its SOCKS5 port — rebuilt from
+source with `with_utls`, it still produced only `WARN missing route.default_domain_resolver`
+and never opened 10808. Rather than continue fighting the aarch64 build, the
+device now points at a proxy that already works: the host (`192.168.0.178`)
+runs Happ, which starts its own `sing-box` listening on `10808` (SOCKS5). The
+device reaches it (`curl -x socks5://192.168.0.178:10808 https://telegram.org`
+returns 200) and direct egress to Telegram is blocked by the provider, so the
+host proxy is the only viable path today.
+
+`/root/.config/tgmuos/proxy.conf` now reads `enabled=1, server=192.168.0.178,
+port=10808`. With it, `tgmuos` loads TDLib, passes `setTdlibParameters`, and
+reaches `authorizationStateWaitPhoneNumber`. The fail-closed contract in
+`tools/run-client.sh` is unchanged — it still aborts when the configured proxy
+endpoint is unavailable; it just no longer depends on the device-local engine.
+
 ## Validation
 
 - `python3 -m unittest discover -s tests` covers direct opt-in, all fail-closed
