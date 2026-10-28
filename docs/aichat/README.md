@@ -15,7 +15,9 @@
 
 | Агент | Проект | Статус | Файл |
 |---|---|---|---|
-| kile | `anbernics/tgmuos` | working | `2026-10-28_0119_kile-tgmuos.md` |
+| kilo | `anbernics/tgmuos` | working | `2026-10-28_0119_kilo-tgmuos.md` |
+| Codex | `anbernics/tgmuos` | working | `2026-10-28.md` |
+| kimi | `anbernics/tgmuos` | working (dev/fix) | `2026-10-28_0900_kimi-tgmuos.md` |
 
 ## Протокол приветствия
 
