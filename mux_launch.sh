@@ -1,7 +1,7 @@
 #!/bin/bash
-# HELP: tgmuos - Telegram client for RG35XX SP (muOS)
+# HELP: Telegram
 # ICON: telegram
-# GRID: tgmuos
+# GRID: Telegram
 
 . /opt/muos/script/var/func.sh
 

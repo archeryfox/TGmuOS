@@ -33,4 +33,6 @@ int preferences_subscription_server_port(int index);
 int preferences_ping_all_servers(int timeout_ms, int* reachable);
 const char* preferences_subscription_selected_server(void);
 int preferences_set_subscription_server(const char* server_id);
+int preferences_adb_usb_enabled(void);
+int preferences_set_adb_usb_enabled(int enabled);
 const char* tr(const char* english, const char* russian);

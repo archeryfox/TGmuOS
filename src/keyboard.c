@@ -25,6 +25,7 @@ typedef struct {
     int alt;
     int russian;
     int language_switch_space;
+    int virtual_gamepad;
 } KeyboardDevice;
 
 static KeyboardDevice devices[MAX_KEYBOARDS];
@@ -78,9 +79,15 @@ static void scan_devices(void) {
             close(fd);
             continue;
         }
+        memset(&devices[device_count], 0, sizeof(devices[device_count]));
         devices[device_count].fd = fd;
         memcpy(devices[device_count].path, path, (size_t)length + 1);
         devices[device_count].russian = 1;
+        char name[64] = {0};
+        if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+                strcmp(name, "tgmuos-remote") == 0) {
+            devices[device_count].virtual_gamepad = 1;
+        }
         ++device_count;
     }
     closedir(directory);
@@ -193,9 +200,22 @@ static const char* character_for_key(int code, int shifted, int caps_lock, int r
     }
 }
 
+static SDL_Keycode virtual_controller_key(int code) {
+    switch (code) {
+        case KEY_X: return SDLK_x;
+        case KEY_Y: return SDLK_y;
+        case KEY_S: return SDLK_s;
+        case KEY_T: return SDLK_t;
+        default: return SDLK_UNKNOWN;
+    }
+}
+
 static void push_key_event(const KeyboardDevice* device, const struct input_event* input) {
-    SDL_Scancode scancode = scancode_for_key(input->code);
-    if (scancode == SDL_SCANCODE_UNKNOWN) return;
+    SDL_Keycode command = device->virtual_gamepad
+        ? virtual_controller_key(input->code) : SDLK_UNKNOWN;
+    SDL_Scancode scancode = command != SDLK_UNKNOWN
+        ? SDL_SCANCODE_UNKNOWN : scancode_for_key(input->code);
+    if (command == SDLK_UNKNOWN && scancode == SDL_SCANCODE_UNKNOWN) return;
 
     SDL_Event event;
     SDL_zero(event);
@@ -203,7 +223,8 @@ static void push_key_event(const KeyboardDevice* device, const struct input_even
     event.key.state = input->value == 0 ? SDL_RELEASED : SDL_PRESSED;
     event.key.repeat = input->value == 2 ? 1 : 0;
     event.key.keysym.scancode = scancode;
-    event.key.keysym.sym = SDL_GetKeyFromScancode(scancode);
+    event.key.keysym.sym = command != SDLK_UNKNOWN
+        ? command : SDL_GetKeyFromScancode(scancode);
     event.key.keysym.mod = (device->shift ? KMOD_SHIFT : KMOD_NONE) |
                            (device->control ? KMOD_CTRL : KMOD_NONE) |
                            (device->alt ? KMOD_ALT : KMOD_NONE);
@@ -250,7 +271,9 @@ static void process_key_event(KeyboardDevice* device, const struct input_event* 
 
     const char* text = character_for_key(
         input->code, device->shift, device->caps_lock, device->russian);
-    if (text && !device->control && !device->alt) push_text_event(text);
+    if (text && !device->virtual_gamepad && !device->control && !device->alt) {
+        push_text_event(text);
+    }
 }
 
 int keyboard_init(void) {
@@ -296,5 +319,10 @@ int keyboard_self_test(void) {
            strcmp(character_for_key(KEY_A, 1, 0, 1), "Ф") == 0 &&
            strcmp(character_for_key(KEY_SPACE, 0, 0, 0), " ") == 0 &&
            strcmp(character_for_key(KEY_1, 1, 0, 0), "!") == 0 &&
-           strcmp(character_for_key(KEY_1, 0, 1, 0), "1") == 0;
+           strcmp(character_for_key(KEY_1, 0, 1, 0), "1") == 0 &&
+           virtual_controller_key(KEY_T) == SDLK_t &&
+           virtual_controller_key(KEY_S) == SDLK_s &&
+           virtual_controller_key(KEY_X) == SDLK_x &&
+           virtual_controller_key(KEY_Y) == SDLK_y &&
+           virtual_controller_key(KEY_A) == SDLK_UNKNOWN;
 }

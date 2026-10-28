@@ -13,8 +13,11 @@ The TDLib runtime choice and muOS packaging requirements are recorded in
 [ADR 0001](docs/adr/0001-tdlib-json-for-muos.md), the rendering architecture
 in [ADR 0002](docs/adr/0002-sdl2-input-direct-framebuffer.md), the VLESS
 proxy integration in
-[ADR 0003](docs/adr/0003-vless-sing-box-proxy-for-tdlib.md), and the muVPN
-scaffold in [ADR 0004](docs/adr/0004-muvpn-tun-vpn-app.md).
+[ADR 0003](docs/adr/0003-vless-sing-box-proxy-for-tdlib.md), the muVPN
+scaffold in [ADR 0004](docs/adr/0004-muvpn-tun-vpn-app.md), on-demand folders
+in [ADR 0005](docs/adr/0005-on-demand-chat-folders.md), remote debugging in
+[ADR 0006](docs/adr/0006-uinput-remote-debugging.md), and proxy startup in
+[ADR 0007](docs/adr/0007-proxy-startup-and-engine-integrity.md).
 
 ## Build on a host
 
@@ -183,6 +186,46 @@ line break, and Backspace deletes a character (or returns to chats when the
 draft is empty). Letter layout follows the language selected in Settings.
 
 On the sign-in keypad, select `QR` to display the Telegram device-linking code.
+
+## Chat folders and archive
+
+The tab strip contains **All**, the custom folders reported by TDLib, and
+**Archive** last. Press Left/Right in the chat list to change folders. The All
+list contains non-archived `chatListMain` chats; custom tabs use their own
+`chatListFolder` ID.
+
+Archive is loaded only after it is selected. Before that, archived chat updates
+do not trigger avatar, user, history, or media downloads. Changing folders
+clears the visible list and resets message history and pagination, without
+deleting previously downloaded files. See
+[ADR 0005](docs/adr/0005-on-demand-chat-folders.md).
+
+## Remote debugging
+
+`tools/anbernic-virtual-gamepad.py` uses the device's Python 3 interpreter over
+SSH (default) or adb; it installs no packages or persistent service. Set
+`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`, and `DISPLAY` if the SSH connection
+needs an askpass helper. Do not put passwords in the command line.
+
+```sh
+python3 tools/anbernic-virtual-gamepad.py --host 192.168.0.151 press right A
+python3 tools/anbernic-virtual-gamepad.py --transport adb --serial DEVICE press B
+python3 tools/anbernic-virtual-gamepad.py --page 0 screenshot /tmp/tgmuos-page0.png
+python3 tools/anbernic-virtual-gamepad.py --page 1 screenshot /tmp/tgmuos-page1.png
+```
+
+A button command creates a short-lived `/dev/uinput` keyboard named
+`tgmuos-remote` and destroys it afterwards. Screenshots read the framebuffer's
+actual pixel layout. Omit `--page` to capture its current offset; inspect both
+pages if the application is running but the image still shows the muOS launcher.
+adb must list an authorized device before it can be used. See
+[ADR 0006](docs/adr/0006-uinput-remote-debugging.md).
+
+Run the Python regression suite with:
+
+```sh
+python3 -m unittest discover -s tests
+```
 
 ## Project layout
 

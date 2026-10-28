@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define IMAGE_CACHE_SIZE 12
+#define IMAGE_CACHE_SIZE 24
 
 static void* image_library;
 static SDL_Surface* (*pIMG_Load)(const char*);

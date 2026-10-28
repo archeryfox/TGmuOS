@@ -4,9 +4,38 @@ project(tgmuos C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED sdl2)
-pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
+# Locate SDL2/SDL2_ttf without pkg-config (muOS toolchain has no pkg-config).
+# Allow overrides via SDL2_ROOT / SDL2_TTF_ROOT for cross builds.
+set(SDL2_ROOT "" CACHE PATH "SDL2 root directory")
+set(SDL2_TTF_ROOT "" CACHE PATH "SDL2_ttf root directory")
+
+macro(tgmuos_find_lib VAR NAME)
+    find_library(${VAR} ${NAME} PATHS ${SDL2_ROOT}/lib ${SDL2_TTF_ROOT}/lib
+                 PATH_SUFFIXES lib lib64)
+endmacro()
+
+macro(tgmuos_find_include VAR NAME)
+    find_path(${VAR} ${NAME} PATHS ${SDL2_ROOT} ${SDL2_TTF_ROOT}
+              PATH_SUFFIXES include)
+endmacro()
+
+tgmuos_find_lib(SDL2_LIBRARY SDL2)
+tgmuos_find_lib(SDL2_TTF_LIBRARY SDL2_ttf)
+tgmuos_find_lib(SDL2_MIXER_LIBRARY SDL2_mixer)
+
+tgmuos_find_include(SDL2_INCLUDE_DIR SDL2/SDL.h)
+tgmuos_find_include(SDL2_TTF_INCLUDE_DIR SDL2/SDL_ttf.h)
+
+if(NOT SDL2_LIBRARY OR NOT SDL2_TTF_LIBRARY OR NOT SDL2_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "SDL2/SDL2_ttf not found. Set SDL2_ROOT and SDL2_TTF_ROOT to the "
+        "sysroot containing libSDL2.so, libSDL2_ttf.so and headers.")
+endif()
+
+set(SDL2_LIBRARIES ${SDL2_LIBRARY} ${SDL2_MIXER_LIBRARY})
+set(SDL2_TTF_LIBRARIES ${SDL2_TTF_LIBRARY})
+set(SDL2_INCLUDE_DIRS ${SDL2_INCLUDE_DIR})
+set(SDL2_TTF_INCLUDE_DIRS ${SDL2_TTF_INCLUDE_DIR})
 
 add_executable(tgmuos
     src/main.c
@@ -27,8 +56,11 @@ add_executable(tgmuos
     src/images.c
     src/log.c
 )
-target_include_directories(tgmuos PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
-target_link_libraries(tgmuos PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS} m)
+target_include_directories(tgmuos PRIVATE include
+    ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
+target_link_libraries(tgmuos PRIVATE
+    ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES}
+    ${CMAKE_DL_LIBS} m)
 
 add_executable(muvpn
     muvpn/src/main.c
@@ -36,8 +68,10 @@ add_executable(muvpn
     src/ui.c
     src/renderer.c
 )
-target_include_directories(muvpn PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
-target_link_libraries(muvpn PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} m)
+target_include_directories(muvpn PRIVATE include
+    ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
+target_link_libraries(muvpn PRIVATE
+    ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} m)
 
 include(CTest)
 if(BUILD_TESTING)

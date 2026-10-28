@@ -38,6 +38,21 @@ static int proxy_port = 1080;
 static char proxy_server[PREFERENCES_PROXY_SERVER_LENGTH];
 static char proxy_username[PREFERENCES_PROXY_CREDENTIAL_LENGTH];
 static char proxy_password[PREFERENCES_PROXY_CREDENTIAL_LENGTH];
+static int adb_usb_enabled;
+static int adb_loaded;
+
+static void load_adb_preferences(void) {
+    if (adb_loaded) return;
+    adb_loaded = 1;
+    FILE* file = fopen("settings.conf", "r");
+    if (!file) return;
+    char line[64];
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "adb_usb=1", 10) == 0) adb_usb_enabled = 1;
+        else if (strncmp(line, "adb_usb=0", 10) == 0) adb_usb_enabled = 0;
+    }
+    fclose(file);
+}
 
 static const char* proxy_config_path(void) {
     const char* path = getenv("TGMUOS_PROXY_CONFIG");
@@ -65,6 +80,8 @@ static void load_preferences(void) {
         else if (strncmp(line, "language=ru", 11) == 0) russian = 1;
         else if (strncmp(line, "animations=0", 12) == 0) animations = 0;
         else if (strncmp(line, "animations=1", 12) == 0) animations = 1;
+        else if (strncmp(line, "adb_usb=1", 10) == 0) adb_usb_enabled = 1;
+        else if (strncmp(line, "adb_usb=0", 10) == 0) adb_usb_enabled = 0;
     }
     fclose(file);
 }
@@ -80,8 +97,8 @@ static void save_preferences(void) {
         fclose(file);
         return;
     }
-    if (fprintf(file, "language=%s\nanimations=%d\n",
-                russian ? "ru" : "en", animations) < 0) {
+    if (fprintf(file, "language=%s\nanimations=%d\nadb_usb=%d\n",
+                russian ? "ru" : "en", animations, adb_usb_enabled) < 0) {
         perror("write settings.conf");
     }
     if (fclose(file) != 0) perror("close settings.conf");
@@ -548,4 +565,18 @@ int preferences_set_subscription_enabled(int enabled) {
 
 const char* tr(const char* english, const char* russian_text) {
     return preferences_is_russian() ? russian_text : english;
+}
+
+int preferences_adb_usb_enabled(void) {
+    load_preferences();
+    load_adb_preferences();
+    return adb_usb_enabled;
+}
+
+int preferences_set_adb_usb_enabled(int enabled) {
+    load_preferences();
+    load_adb_preferences();
+    adb_usb_enabled = enabled != 0;
+    save_preferences();
+    return 1;
 }

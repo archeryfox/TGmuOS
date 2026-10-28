@@ -37,7 +37,9 @@ def private_environment():
     environment["TGMUOS_CONFIG_DIR"] = str(CONFIG_DIR)
     environment["TGMUOS_SUBSCRIPTION_CONFIG"] = str(SUBSCRIPTION_CONFIG)
     environment["TGMUOS_SERVERS_FILE"] = str(SERVER_LIST)
-    environment["TGMUOS_SINGBOX_MODE"] = "tun"
+    environment["TGMUOS_SINGBOX_MODE"] = os.environ.get(
+        "TGMUOS_SINGBOX_MODE", "tun"
+    )
     return environment
 
 

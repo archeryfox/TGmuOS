@@ -40,6 +40,9 @@ static const char* AUTH_SYMBOLS[] = {
 #define AUTH_SYMBOL_COUNT 11
 #define AUTH_SERVICE_COUNT 6
 #define AUTH_KEYBOARD_ROWS 6
+#define AUTH_KEYBOARD_TOP 270
+#define AUTH_KEYBOARD_KEY_HEIGHT 22
+#define AUTH_KEYBOARD_ROW_STEP 24
 
 static int auth_letter_row_count(const ScreenAuth* screen, int row) {
     return screen->russian_keyboard
@@ -328,7 +331,7 @@ static void auth_render(Screen* self, AppRenderer* renderer) {
             if (key_width > max_key_width) key_width = max_key_width;
             int total_width = count * key_width + gap * (count - 1);
             int x = (640 - total_width) / 2;
-            int y = 188 + row * 29;
+            int y = AUTH_KEYBOARD_TOP + row * AUTH_KEYBOARD_ROW_STEP;
             int index = auth_key_index_at(screen, row, 0);
             for (int column = 0; column < count; ++column) {
                 int key_index = index + column;
@@ -337,13 +340,13 @@ static void auth_render(Screen* self, AppRenderer* renderer) {
                                                    label_buffer,
                                                    sizeof(label_buffer));
                 ui_round_rect(renderer,
-                              (SDL_Rect){x, y, key_width, 24}, 6,
+                              (SDL_Rect){x, y, key_width, AUTH_KEYBOARD_KEY_HEIGHT}, 6,
                               key_index == screen->selected_key
                                   ? COLOR_BLUE : COLOR_PANEL);
                 int text_width = ui_text_width(label, 13);
                 int text_x = x + (key_width - text_width) / 2;
                 if (text_x < x + 2) text_x = x + 2;
-                ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+                ui_text(renderer, label, text_x, y + 3, 13, COLOR_TEXT);
                 x += key_width + gap;
             }
         }

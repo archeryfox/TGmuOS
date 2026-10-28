@@ -116,20 +116,34 @@ static void chats_render(Screen* self, AppRenderer* renderer) {
     ui_text(renderer, tr("Chats", "Чаты"), 22, 10, 24, COLOR_TEXT);
     ui_status_bar(renderer, 618, 23);
 
-    /* Folder tabs (LEFT/RIGHT switches): main list plus TDLib chat folders. */
     int folder_total = tg_folder_count() + 1;
-    int tab_x = 12;
-    for (int index = 0; index < folder_total && tab_x < 560; ++index) {
+    int widths[10] = {0};
+    int positions[10] = {0};
+    int total_width = 0;
+    int selected = tg_current_folder();
+    for (int index = 0; index < folder_total; ++index) {
         const char* title = index == 0 ? tr("All", "Все")
                                        : tg_folder_title(index);
-        int title_width = ui_text_width(title, 13);
-        int tab_width = title_width + 18;
-        if (tab_width < 44) tab_width = 44;
-        ui_round_rect(renderer, (SDL_Rect){tab_x, 62, tab_width, 20}, 8,
-                      index == tg_current_folder() ? COLOR_BLUE : COLOR_ROW);
+        positions[index] = total_width;
+        widths[index] = ui_text_width(title, 13) + 18;
+        if (widths[index] < 44) widths[index] = 44;
+        total_width += widths[index] + 6;
+    }
+    int tab_offset = 12;
+    if (total_width > 616 && selected >= 0 && selected < folder_total) {
+        tab_offset = 320 - positions[selected] - widths[selected] / 2;
+        if (tab_offset > 12) tab_offset = 12;
+        if (tab_offset < 628 - total_width) tab_offset = 628 - total_width;
+    }
+    for (int index = 0; index < folder_total; ++index) {
+        int tab_x = tab_offset + positions[index];
+        if (tab_x + widths[index] < 0 || tab_x >= 640) continue;
+        const char* title = index == 0 ? tr("All", "Все")
+                                       : tg_folder_title(index);
+        ui_round_rect(renderer, (SDL_Rect){tab_x, 62, widths[index], 20}, 8,
+                      index == selected ? COLOR_BLUE : COLOR_ROW);
         ui_text(renderer, title, tab_x + 9, 65, 13,
-                index == tg_current_folder() ? COLOR_TEXT : COLOR_MUTED);
-        tab_x += tab_width + 6;
+                index == selected ? COLOR_TEXT : COLOR_MUTED);
     }
 
 for (int row = 0; row < VISIBLE_CHATS; ++row) {

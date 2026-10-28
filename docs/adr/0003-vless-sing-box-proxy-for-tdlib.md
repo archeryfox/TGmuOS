@@ -96,3 +96,4 @@ client side:
 
 - ADR 0001: TDLib JSON as the Telegram runtime
 - ADR 0004: muVPN as a separate system-wide VPN app
+- ADR 0007: Fail-closed proxy startup and sing-box integrity

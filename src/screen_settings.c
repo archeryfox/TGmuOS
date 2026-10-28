@@ -146,6 +146,9 @@ static void settings_handle(Screen* self, const SDL_Event* event) {
                 }
             } else if (screen->selected == 3) {
                 enter_server_list(screen);
+            } else if (screen->selected == 4) {
+                tg_open_own_profile();
+                app_set_screen(ScreenId_Profile);
             } else if (screen->selected == 5) {
                 if (!tg_apply_subscription(preferences_subscription_enabled())) {
                     SDL_Log("Unable to apply the Telegram connection");
@@ -157,6 +160,10 @@ static void settings_handle(Screen* self, const SDL_Event* event) {
             } else if (screen->selected == 7) {
                 if (!tg_restore_saved_account()) {
                     SDL_Log("No saved account to restore");
+                }
+            } else if (screen->selected == 8) {
+                if (!tg_toggle_adb_usb()) {
+                    SDL_Log("Unable to toggle ADB USB");
                 }
             }
             break;
@@ -215,10 +222,11 @@ static void settings_render(Screen* self, AppRenderer* renderer) {
         tr("Animations", "Анимации"),
         tr("VLESS subscription", "Подписка VLESS"),
         tr("Choose server", "Выбрать сервер"),
-        tr("Subscription link", "Ссылка подписки"),
+        tr("My profile", "Мой профиль"),
         tr("Apply connection", "Применить подключение"),
         tr("Log out", "Выйти из аккаунта"),
-        tr("Saved account", "Сохранённый аккаунт")
+        tr("Saved account", "Сохранённый аккаунт"),
+        tr("ADB USB controls", "ADB USB управление")
     };
     const char* selected_server = tr("Automatic (best ping)", "Авто (лучший пинг)");
     static char server_value[PREFERENCES_SUBSCRIPTION_SERVER_NAME_LENGTH + 24];
@@ -248,18 +256,20 @@ static void settings_render(Screen* self, AppRenderer* renderer) {
         preferences_subscription_enabled() ? tr("Enabled", "Включена")
                                            : tr("Disabled", "Выключена"),
         selected_server,
-        preferences_subscription_configured() ? tr("Installed", "Установлена")
-                                             : tr("Not configured", "Не задана"),
-        tr("Apply now", "Применить сейчас"),
+        tg_state() == TgStateReady ? tr("Open", "Открыть")
+                                   : tr("Sign in first", "Сначала войдите"),
+        tr("Apply now", "Применить подключение"),
         tr("Cache kept", "Кэш сохранится"),
-        tg_has_saved_account() ? tr("Sign in", "Войти") : tr("None", "Нет")
+        tg_has_saved_account() ? tr("Sign in", "Войти") : tr("None", "Нет"),
+        preferences_adb_usb_enabled() ? tr("Enabled", "Включено")
+                                       : tr("Disabled", "Выключено")
     };
 
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 58}, COLOR_HEADER);
     ui_text(renderer, tr("Settings", "Настройки"), 22, 10, 24, COLOR_TEXT);
 
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 9; ++i) {
         int y = 68 + i * 44;
         ui_round_rect(renderer, (SDL_Rect){18, y, 604, 39}, 13,
                       i == screen->selected ? COLOR_BLUE : COLOR_PANEL);

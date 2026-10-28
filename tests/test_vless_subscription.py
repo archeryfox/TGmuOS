@@ -101,8 +101,9 @@ class VlessSubscriptionTests(unittest.TestCase):
             {"_id": "c" * 16, "_name": "offline", "server": "offline", "server_port": 443,
              "tag": "node-offline"},
         ]
+        latencies = {"slow": 80, "fast": 12, "offline": None}
         with unittest.mock.patch.object(
-            subscription, "probe_server", side_effect=[80, 12, None]
+            subscription, "probe_server", side_effect=lambda node: latencies[node["_name"]]
         ):
             servers = subscription.sort_servers_by_ping(nodes)
         self.assertEqual([server["name"] for server in servers],

@@ -244,9 +244,10 @@ static void draw(AppRenderer* renderer) {
     SDL_Color state_color = strstr(status_text, "подключ") ?
                             COLOR_ACCENT : COLOR_WARNING;
     ui_text(renderer, status_text, 44, 119, 18, state_color);
-    ui_text(renderer, selected_server[0] ?
-            "Выбранный узел применяется при переподключении" :
-            "Режим выбора: автоматически", 44, 145, 14, COLOR_MUTED);
+    const char* mode = getenv("TGMUOS_SINGBOX_MODE");
+    const char* mode_label = (mode && strcmp(mode, "tun") == 0) ?
+                             "TUN" : "SOCKS";
+    ui_text(renderer, mode_label, 44, 145, 14, COLOR_MUTED);
 
     ui_text(renderer, "СЕРВЕРЫ  ·  A — выбрать", 30, 186, 14, COLOR_MUTED);
     const int visible_rows = 5;

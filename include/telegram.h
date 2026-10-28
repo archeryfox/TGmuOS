@@ -110,6 +110,7 @@ int tg_submit_auth(const char* value);
 int tg_send_message(const char* text);
 int tg_apply_proxy(int enabled);
 int tg_apply_subscription(int enabled);
+int tg_toggle_adb_usb(void);
 int tg_logout(void);
 int tg_has_saved_account(void);
 int tg_restore_saved_account(void);

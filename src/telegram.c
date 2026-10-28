@@ -461,6 +461,14 @@ static void user_update(int user) {
             entry->photo_file_id = file_id;
             entry->photo_pending = 1;
         }
+        if (id == client.me_id) {
+            client.me_photo_file_id = file_id;
+            client.me_photo_pending = entry->photo_pending;
+        }
+    }
+    if (id == client.me_id) {
+        snprintf(client.me_photo_path, sizeof(client.me_photo_path), "%s",
+                 entry->photo_path);
     }
 }
 
@@ -995,15 +1003,16 @@ static void request_chats(void) {
         client.last_exhausted_retry_ms = now;
     }
     char request[160];
-    if (client.current_folder > 0 &&
+    if (client.current_folder == client.folder_count + 1) {
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListArchive\"},\"limit\":50}");
+    } else if (client.current_folder > 0 &&
             client.current_folder <= client.folder_count) {
         snprintf(request, sizeof(request),
                  "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListFolder\","
                  "\"chat_folder_id\":%d},\"limit\":50}",
                  client.folders[client.current_folder - 1].id);
     } else {
-        /* Main list: never pull archived chats into the visible list — they
-         * stay in the archive until the user explicitly opens them. */
         snprintf(request, sizeof(request),
                  "{\"@type\":\"loadChats\",\"chat_list\":{\"@type\":\"chatListMain\"},\"limit\":50}");
     }
@@ -1277,70 +1286,60 @@ static void handle_authorization(const char* state) {
     }
 }
 
-static void update_chat(int object) {
-    int64_t id = token_integer(json_member(object, "id"));
-    if (!id) return;
-    /* Folder views only list chats that belong to the active folder. */
-    if (client.current_folder > 0 && client.current_folder <= client.folder_count) {
-        int wanted = client.folders[client.current_folder - 1].id;
-        int member = 0;
-        int lists = json_member(object, "chat_lists");
-        for (int i = 0; i < json_array_size(lists); ++i) {
-            int list = json_array_item(lists, i);
-            char list_name[32];
-            token_string(json_member(list, "@type"), list_name, sizeof(list_name));
-            if (strcmp(list_name, "chatListFolder") == 0 &&
-                    (int)token_integer(json_member(list, "chat_folder_id")) == wanted) {
-                member = 1;
-                break;
-            }
-        }
-        if (!member) {
-            /* Drop stale entries when the user switches folders. */
-            for (int i = 0; i < client.chat_count; ++i) {
-                if (client.chats[i].id == id) {
-                    memmove(client.chats + i, client.chats + i + 1,
-                            sizeof(client.chats[0]) * (size_t)(client.chat_count - i - 1));
-                    --client.chat_count;
-                    break;
-                }
-            }
-            return;
-        }
-    }
-    int index = 0;
-    while (index < client.chat_count && client.chats[index].id != id) ++index;
-    if (index == client.chat_count) {
-        /* Archived chats are hidden from the main list — they only appear
-         * when the user explicitly opens them by id. */
-        int lists = json_member(object, "chat_lists");
-        int in_archive = 0;
-        for (int i = 0; i < json_array_size(lists); ++i) {
-            int list = json_array_item(lists, i);
-            char list_name[32];
-            token_string(json_member(list, "@type"), list_name, sizeof(list_name));
-            if (strcmp(list_name, "chatListArchive") == 0) {
-                in_archive = 1;
-                break;
-            }
-        }
-        if (in_archive && client.current_folder == 0) return;
-        if (client.chat_count >= TG_MAX_CHATS) return;
-        ++client.chat_count;
-    }
-    TgChat* chat = &client.chats[index];
-    chat->id = id;
-    chat->archived = 0;
+static int chat_in_list(int object, const char* wanted_type, int folder_id) {
     int lists = json_member(object, "chat_lists");
     for (int i = 0; i < json_array_size(lists); ++i) {
         int list = json_array_item(lists, i);
         char list_name[32];
         token_string(json_member(list, "@type"), list_name, sizeof(list_name));
-        if (strcmp(list_name, "chatListArchive") == 0) {
-            chat->archived = 1;
-            break;
+        if (strcmp(list_name, wanted_type) != 0) continue;
+        if (folder_id < 0 ||
+                (int)token_integer(json_member(list, "chat_folder_id")) == folder_id) {
+            return 1;
         }
     }
+    return 0;
+}
+
+static void remove_chat(int64_t id) {
+    for (int i = 0; i < client.chat_count; ++i) {
+        if (client.chats[i].id != id) continue;
+        memmove(client.chats + i, client.chats + i + 1,
+                sizeof(client.chats[0]) * (size_t)(client.chat_count - i - 1));
+        --client.chat_count;
+        return;
+    }
+}
+
+static void update_chat(int object) {
+    int64_t id = token_integer(json_member(object, "id"));
+    if (!id) return;
+    int archived = chat_in_list(object, "chatListArchive", -1);
+    int archive_visible = client.current_folder == client.folder_count + 1;
+    int member = 0;
+    if (archive_visible) {
+        member = archived;
+    } else if (!archived && client.current_folder == 0) {
+        member = chat_in_list(object, "chatListMain", -1);
+    } else if (!archived && client.current_folder > 0 &&
+               client.current_folder <= client.folder_count) {
+        member = chat_in_list(object, "chatListFolder",
+                              client.folders[client.current_folder - 1].id);
+    }
+    if (!member) {
+        remove_chat(id);
+        return;
+    }
+
+    int index = 0;
+    while (index < client.chat_count && client.chats[index].id != id) ++index;
+    if (index == client.chat_count) {
+        if (client.chat_count >= TG_MAX_CHATS) return;
+        ++client.chat_count;
+    }
+    TgChat* chat = &client.chats[index];
+    chat->id = id;
+    chat->archived = archived;
     chat->type = TgChatUnknown;
     chat->user_id = 0;
     chat->group_id = 0;
@@ -1364,7 +1363,6 @@ static void update_chat(int object) {
     token_string(json_member(object, "title"), chat->title, sizeof(chat->title));
     extract_content_text(json_member(json_member(object, "last_message"), "content"),
                          chat->preview, sizeof(chat->preview));
-    /* Request the chat photo if the chat has one and we haven't cached it yet. */
     int photo = json_member(object, "photo");
     if (photo >= 0) {
         int small = json_member(photo, "small");
@@ -1558,6 +1556,7 @@ static void handle_response(const char* response) {
     } else if (strcmp(type_name, "chats") == 0) {
         int chats = json_member(0, "chat_ids");
         int count = json_array_size(chats);
+        client.chats_exhausted = 0;
         if (count > TG_MAX_CHATS) count = TG_MAX_CHATS;
         for (int i = 0; i < count; ++i) {
             char request[128];
@@ -1617,7 +1616,7 @@ static void handle_response(const char* response) {
                      "%s", title);
             ++client.folder_count;
         }
-        if (client.current_folder > client.folder_count) {
+        if (client.current_folder > client.folder_count + 1) {
             client.current_folder = 0;
         }
         log_info("tg", "chat folders updated: %d", client.folder_count);
@@ -1677,14 +1676,17 @@ static void handle_response(const char* response) {
                                      sizeof(client.users[i].photo_path));
                     }
                 }
-            }
-            if (client.me_photo_file_id == file_id) {
-                client.me_photo_pending = 0;
-                if (done) {
-                    token_string(json_member(local, "path"),
-                                 client.me_photo_path,
-                                 sizeof(client.me_photo_path));
+                if (client.users[i].id == client.me_id) {
+                    client.me_photo_pending = 0;
+                    if (done) {
+                        token_string(json_member(local, "path"),
+                                     client.me_photo_path,
+                                     sizeof(client.me_photo_path));
+                    }
                 }
+            }
+            if (client.me_photo_file_id == file_id && !done) {
+                client.me_photo_pending = 1;
             }
         }
     } else if (strcmp(type_name, "error") == 0) {
@@ -1710,6 +1712,12 @@ static void handle_response(const char* response) {
                          client.current_folder);
             }
             client.chats_exhausted = 1;
+            return;
+        }
+        if (request_method && strcmp(request_method, "pingProxy") == 0) {
+            client.proxy_ping.last_ms = -1;
+            client.proxy_ping.last_result_ms = SDL_GetTicks();
+            log_error("proxy", "pingProxy failed: %d: %s", code, message);
             return;
         }
         if (client.proxy_setup_pending || client.proxy_apply_pending ||
@@ -1802,9 +1810,11 @@ static void pump_photo_downloads(void) {
 }
 
 /* Probe the active proxy with pingProxy so the status bar can show real
- * connectivity instead of just "enabled". */
+ * connectivity instead of just "enabled". Runs even before authorization:
+ * a fresh login depends on the proxy path to the data centers, and a failed
+ * ping is the earliest possible diagnosis. */
 static void pump_proxy_ping(void) {
-    if (!client.running || client.state != TgStateReady) return;
+    if (!client.running || !client.receive) return;
     if (!preferences_proxy_enabled()) return;
     uint32_t now = SDL_GetTicks();
     if (client.proxy_ping.last_sent_ms &&
@@ -1870,6 +1880,17 @@ void tg_stop(void) {
                 if (response) handle_response(response);
             }
         }
+        if (!client.closed && client.send) {
+            /* TDLib still holds the session lock; force destroy so the
+             * next start does not fail with "td.binlog already in use". */
+            send_request("{\"@type\":\"destroy\"}");
+            if (client.receive) {
+                for (int i = 0; i < 10; ++i) {
+                    const char* response = client.receive(0.2);
+                    if (response) handle_response(response);
+                }
+            }
+        }
     }
     client.running = 0;
     /* Keep TDLib mapped until process exit if it didn't finish closing in time. */
@@ -1881,10 +1902,19 @@ void tg_stop(void) {
     memset(client.database_key, 0, sizeof(client.database_key));
 }
 
+#define TG_TEST_ASSERT(condition) do { \
+    if (!(condition)) { \
+        fprintf(stderr, "Telegram JSON assertion at line %d: %s\n", \
+                __LINE__, #condition); \
+        return 0; \
+    } \
+} while (0)
+
 int tg_json_self_test(void) {
     memset(&client, 0, sizeof(client));
     const char* chat =
         "{\"@type\":\"updateNewChat\",\"chat\":{\"id\":42,\"title\":\"A \\\"test\\\"\","
+        "\"chat_lists\":[{\"@type\":\"chatListMain\"}],"
         "\"last_message\":{\"content\":{\"@type\":\"messageText\","
         "\"text\":{\"text\":\"hello\"}}}}}";
     if (!json_parse(chat)) return 0;
@@ -1901,6 +1931,71 @@ int tg_json_self_test(void) {
     handle_response(message);
     if (client.message_count != 1 || !client.messages[0].outgoing) return 0;
     if (strcmp(client.messages[0].text, "hi \\u263a") != 0) return 0;
+
+    client.send = self_test_send;
+    client.client_id = 1;
+    client.running = 1;
+    client.state = TgStateReady;
+    handle_response("{\"@type\":\"updateChatFolders\",\"chat_folders\":["
+                    "{\"id\":7,\"name\":{\"text\":\"work\"}}]}");
+    if (client.folder_count != 1 || tg_folder_count() != 2 ||
+        strcmp(tg_folder_title(1), "work") != 0 ||
+        strcmp(tg_folder_title(2), tr("Archive", "Архив")) != 0 ||
+        tg_folder_title(3)[0]) {
+        fprintf(stderr, "folder tabs: count=%d custom+archive=%d work='%s' archive='%s' invalid='%s'\n",
+                client.folder_count, tg_folder_count(), tg_folder_title(1),
+                tg_folder_title(2), tg_folder_title(3));
+        return 0;
+    }
+    self_test_request[0] = '\0';
+    request_chats();
+    TG_TEST_ASSERT(strstr(self_test_request, "chatListMain") != NULL &&
+                   strstr(self_test_request, "chatListArchive") == NULL);
+
+    const char* work_chat =
+        "{\"@type\":\"updateNewChat\",\"chat\":{\"id\":43,\"title\":\"work chat\","
+        "\"chat_lists\":[{\"@type\":\"chatListFolder\",\"chat_folder_id\":7}]}}";
+    const char* archived_chat =
+        "{\"@type\":\"updateNewChat\",\"chat\":{\"id\":44,\"title\":\"archived\","
+        "\"chat_lists\":[{\"@type\":\"chatListArchive\"},"
+        "{\"@type\":\"chatListFolder\",\"chat_folder_id\":7}],"
+        "\"photo\":{\"small\":{\"id\":501}}}}";
+    self_test_request[0] = '\0';
+    handle_response(work_chat);
+    handle_response(archived_chat);
+    fprintf(stderr, "Archive baseline: count=%d request=%s\n",
+            client.chat_count, self_test_request);
+    TG_TEST_ASSERT(client.chat_count == 1 && !self_test_request[0]);
+
+    tg_set_folder(1);
+    TG_TEST_ASSERT(client.current_folder == 1 && client.chat_count == 0 &&
+                   strstr(self_test_request, "chatListFolder") != NULL &&
+                   strstr(self_test_request, "chat_folder_id\":7") != NULL);
+    handle_response(chat);
+    TG_TEST_ASSERT(client.chat_count == 0);
+    handle_response(work_chat);
+    TG_TEST_ASSERT(client.chat_count == 1 && client.chats[0].id == 43);
+    self_test_request[0] = '\0';
+    handle_response(archived_chat);
+    TG_TEST_ASSERT(client.chat_count == 1 && !self_test_request[0]);
+
+    client.chats_exhausted = 1;
+    client.last_exhausted_retry_ms = 123;
+    client.last_chat_refresh_ms = 123;
+    client.older_history_pending = 1;
+    tg_set_folder(tg_folder_count());
+    TG_TEST_ASSERT(client.current_folder == 2 && !client.chats_exhausted &&
+                   !client.last_exhausted_retry_ms && !client.last_chat_refresh_ms &&
+                   !client.older_history_pending &&
+                   strstr(self_test_request, "chatListArchive") != NULL);
+    self_test_request[0] = '\0';
+    handle_response(archived_chat);
+    TG_TEST_ASSERT(client.chat_count == 1 && client.chats[0].id == 44 &&
+                   client.chats[0].archived &&
+                   strstr(self_test_request, "downloadFile") != NULL);
+    handle_response(work_chat);
+    TG_TEST_ASSERT(client.chat_count == 1);
+    fprintf(stderr, "Telegram JSON archive isolation passed\n");
 
     client.pending_auth_state = TgStateCode;
     snprintf(client.pending_auth_status, sizeof(client.pending_auth_status), "Telegram login");
@@ -1955,9 +2050,13 @@ int tg_json_self_test(void) {
     if (client.state != TgStatePhone || !client.error[0]) return 0;
     handle_response(qr_state);
     unsigned char matrix[37][37];
-    return client.state == TgStateQr &&
-           strcmp(client.qr_link, "tg://login?token=sample") == 0 &&
-           tg_qr_matrix(matrix);
+    if (client.state != TgStateQr ||
+            strcmp(client.qr_link, "tg://login?token=sample") != 0 ||
+            !tg_qr_matrix(matrix)) {
+        fprintf(stderr, "Telegram JSON QR stage failed: state=%d\n", client.state);
+        return 0;
+    }
+    return 1;
 }
 
 TgState tg_state(void) {
@@ -2068,10 +2167,11 @@ const char* tg_selected_chat_photo_path(void) {
 }
 
 int tg_folder_count(void) {
-    return client.folder_count;
+    return client.folder_count + 1;
 }
 
 const char* tg_folder_title(int index) {
+    if (index == client.folder_count + 1) return tr("Archive", "Архив");
     if (index <= 0 || index > client.folder_count) return "";
     return client.folders[index - 1].title;
 }
@@ -2081,7 +2181,7 @@ int tg_current_folder(void) {
 }
 
 void tg_set_folder(int index) {
-    if (index < 0 || index > client.folder_count ||
+    if (index < 0 || index > client.folder_count + 1 ||
             index == client.current_folder) {
         return;
     }
@@ -2090,8 +2190,10 @@ void tg_set_folder(int index) {
     client.requested_chats = 0;
     client.selected_chat = 0;
     client.message_count = 0;
+    client.older_history_pending = 0;
     client.older_history_exhausted = 0;
     client.chats_exhausted = 0;
+    client.last_chat_refresh_ms = 0;
     client.last_exhausted_retry_ms = 0;
     if (client.state == TgStateReady) request_chats();
 }
@@ -2279,6 +2381,28 @@ int tg_apply_subscription(int enabled) {
 }
 
 
+/* ---- ADB USB toggle ---------------------------------------------------- */
+
+int tg_toggle_adb_usb(void) {
+    int enabled = preferences_adb_usb_enabled();
+    int next = !enabled;
+    if (!preferences_set_adb_usb_enabled(next)) {
+        snprintf(client.error, sizeof(client.error),
+                 "Cannot save ADB USB setting");
+        return 0;
+    }
+    /* Apply the setting immediately on the device. */
+    FILE* process = popen("setprop persist.sys.adb.enable 1 2>/dev/null || "
+                          "setprop sys.usb.config 1 2>/dev/null || true", "r");
+    if (process) {
+        char output[256];
+        while (fgets(output, sizeof(output), process)) { /* consume */ }
+        pclose(process);
+    }
+    return 1;
+}
+
+
 /* ---- connectivity probe -------------------------------------------- */
 
 int tg_proxy_ping_ms(void) {
@@ -2308,6 +2432,7 @@ int tg_me_has_photo(void) {
 }
 
 const char* tg_me_photo_path(void) {
+    if (client.me_photo_path[0]) return client.me_photo_path;
     int index = user_find(client.me_id);
     return index >= 0 ? client.users[index].photo_path : NULL;
 }

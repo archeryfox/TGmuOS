@@ -716,10 +716,10 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
         int index = 0;
         for (int row = 0; row < KEYBOARD_ROWS; ++row) {
             int count = layout.counts[row];
-            int gap = 4;
-            int margin = 22;
+            int gap = 3;
+            int margin = 12;
             int key_width = (640 - margin * 2 - gap * (count - 1)) / count;
-            int y = 264 + row * 28;
+            int y = KEYBOARD_TOP + row * KEYBOARD_ROW_STEP;
             for (int column = 0; column < count; ++column) {
                 int x = margin + column * (key_width + gap);
                 char label_buffer[8];
@@ -728,13 +728,14 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
                 int text_width = ui_text_width(label, 13);
                 int text_x = x + (key_width - text_width) / 2;
                 if (text_x < x + 2) text_x = x + 2;
-                ui_round_rect(renderer, (SDL_Rect){x, y, key_width, 24}, 6,
+                ui_round_rect(renderer, (SDL_Rect){x, y, key_width, KEYBOARD_KEY_HEIGHT}, 6,
                               index == selected ? COLOR_BLUE : COLOR_PANEL);
-                ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+                ui_text(renderer, label, text_x, y + 3, 13, COLOR_TEXT);
                 ++index;
             }
         }
-        /* Service row: wider keys, centered labels. */
+        /* Service row: wider keys, centered labels, anchored above the
+         * hint bar together with the letter rows. */
         static const int service_widths[SERVICE_KEY_COUNT] = {110, 66, 66, 82, 92, 90};
         int keyboard_russian = screen->russian_keyboard;
         const char* labels[SERVICE_KEY_COUNT] = {
@@ -752,16 +753,16 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
         }
         total_width += gap * (SERVICE_KEY_COUNT - 1);
         int x = (640 - total_width) / 2;
-        int y = 264 + KEYBOARD_ROWS * 28;
+        int y = KEYBOARD_TOP + KEYBOARD_ROWS * KEYBOARD_ROW_STEP;
         for (int i = 0; i < SERVICE_KEY_COUNT; ++i) {
             int key_index = layout.total + i;
             const char* label = labels[i];
             int text_width = ui_text_width(label, 13);
             int text_x = x + (service_widths[i] - text_width) / 2;
             if (text_x < x + 2) text_x = x + 2;
-            ui_round_rect(renderer, (SDL_Rect){x, y, service_widths[i], 24}, 6,
+            ui_round_rect(renderer, (SDL_Rect){x, y, service_widths[i], KEYBOARD_KEY_HEIGHT}, 6,
                           key_index == selected ? COLOR_BLUE : COLOR_PANEL);
-            ui_text(renderer, label, text_x, y + 4, 13, COLOR_TEXT);
+            ui_text(renderer, label, text_x, y + 3, 13, COLOR_TEXT);
             x += service_widths[i] + gap;
         }
     }
@@ -791,7 +792,7 @@ ScreenChat* screen_chat_create(void) {
     screen->selected_key = 0;
     screen->uppercase = 0;
     screen->symbols = 0;
-    screen->russian_keyboard = 1;
-    screen->keyboard_visible = 1;
+    screen->russian_keyboard = 0;
+    screen->keyboard_visible = 0;
     return screen;
 }

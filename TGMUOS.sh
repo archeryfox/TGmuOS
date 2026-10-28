@@ -1,5 +1,5 @@
 #!/bin/bash
-# HELP: tgmuos - Telegram client for RG35XX SP (muOS)
+# HELP: Telegram
 # Direct launch script (fallback without PortMaster)
 
 . /opt/muos/script/var/func.sh

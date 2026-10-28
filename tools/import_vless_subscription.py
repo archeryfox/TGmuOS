@@ -75,6 +75,19 @@ def read_subscription_urls():
     return urls
 
 
+def read_subscription_url():
+    with open(SUBSCRIPTION_FILE, encoding="utf-8") as config:
+        for line in config:
+            key, separator, value = line.rstrip("\r\n").partition("=")
+            if separator and key == "url":
+                url = value.strip()
+                parsed = urllib.parse.urlsplit(url)
+                if parsed.scheme.lower() != "https" or not parsed.hostname:
+                    raise ValueError("subscription URL must use HTTPS")
+                return url
+    return ""
+
+
 def read_manual_profile():
     try:
         with open(MANUAL_PROFILE, encoding="utf-8") as profile:
