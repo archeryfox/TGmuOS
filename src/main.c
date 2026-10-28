@@ -5,6 +5,7 @@
 #include "screen_auth.h"
 #include "screen_chat.h"
 #include "screen_chats.h"
+#include "screen_profile.h"
 #include "screen_settings.h"
 #include "ui.h"
 #include "renderer.h"
@@ -159,6 +160,7 @@ int main(int argc, char* argv[]) {
     screens[ScreenId_Chats] = (Screen*)screen_chats_create();
     screens[ScreenId_Chat] = (Screen*)screen_chat_create();
     screens[ScreenId_Settings] = (Screen*)screen_settings_create();
+    screens[ScreenId_Profile] = (Screen*)screen_profile_create();
     for (int i = 0; i < ScreenId_Count; ++i) {
         if (!screens[i]) {
             fprintf(stderr, "Failed to create screen %d\n", i);

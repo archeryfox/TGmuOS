@@ -9,6 +9,7 @@ typedef enum {
     ScreenId_Chats,
     ScreenId_Chat,
     ScreenId_Settings,
+    ScreenId_Profile,
     ScreenId_Count
 } ScreenId;
 

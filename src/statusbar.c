@@ -3,12 +3,14 @@
 #include "statusbar.h"
 
 #include "preferences.h"
+#include "telegram.h"
 #include "ui.h"
 
 #include <SDL2/SDL.h>
 
 #include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -21,6 +23,7 @@ static int battery_percent = -1;
 static int battery_charging;
 static int network_up;
 static int vpn_active;
+static int wifi_dbm = 0; /* 0 = unknown / not associated */
 static char clock_text[8] = "--:--";
 
 static uint32_t now_ms(void) {
@@ -107,6 +110,24 @@ static int pid_file_alive(const char* path) {
     return lstat(exe, &info) == 0;
 }
 
+/* WiFi RSSI via iw (wext sysfs is absent on this kernel). Cached by the
+ * usual refresh interval; 0 means "unknown". */
+static void read_wifi_signal(void) {
+    wifi_dbm = 0;
+    FILE* pipe = popen("iw dev wlan0 link 2>/dev/null", "r");
+    if (!pipe) return;
+    char line[160];
+    while (fgets(line, sizeof(line), pipe)) {
+        char* at = strstr(line, "signal:");
+        if (at) {
+            int value = atoi(at + 7);
+            if (value < 0) wifi_dbm = value;
+            break;
+        }
+    }
+    pclose(pipe);
+}
+
 static void read_vpn(void) {
     vpn_active = pid_file_alive("/root/.config/muvpn/sing-box.pid");
 }
@@ -126,6 +147,7 @@ static void refresh(void) {
     read_battery();
     read_network();
     read_vpn();
+    read_wifi_signal();
 }
 
 void ui_status_bar(AppRenderer* renderer, int x, int y) {
@@ -135,13 +157,20 @@ void ui_status_bar(AppRenderer* renderer, int x, int y) {
     static const SDL_Color COLOR_MUTED = {156, 168, 185, 255};
     static const SDL_Color COLOR_OK = {120, 200, 120, 255};
     static const SDL_Color COLOR_WARN = {255, 120, 100, 255};
+    static const SDL_Color COLOR_MID = {240, 200, 90, 255};
     SDL_Color battery_color = battery_percent >= 0 && battery_percent <= 20
         ? COLOR_WARN : COLOR_TEXT;
 
     char text[96];
-    const char* proxy = preferences_proxy_enabled()
-        ? tr("PROXY", "ПРОКСИ") : tr("DIRECT", "НАПРЯМУЮ");
-    SDL_Color proxy_color = preferences_proxy_enabled() ? COLOR_OK : COLOR_MUTED;
+    /* Proxy label with real connectivity: green only when TDLib's pingProxy
+     * recently succeeded, yellow when enabled but unproven, grey when off. */
+    int proxy_enabled = preferences_proxy_enabled();
+    int proxy_ping = tg_proxy_ping_ms();
+    const char* proxy = proxy_enabled ? tr("PROXY", "ПРОКСИ") : tr("DIRECT", "НАПРЯМУЮ");
+    SDL_Color proxy_color = COLOR_MUTED;
+    if (proxy_enabled) {
+        proxy_color = proxy_ping >= 0 ? COLOR_OK : COLOR_MID;
+    }
     const char* vpn = vpn_active ? "VPN" : "";
     SDL_Color vpn_color = COLOR_OK;
 
@@ -165,9 +194,25 @@ void ui_status_bar(AppRenderer* renderer, int x, int y) {
 
     width = ui_text_width(proxy, 13);
     ui_text(renderer, proxy, x - width, y, 13, proxy_color);
-    x -= width + 8;
+    x -= width + 10;
 
-    /* Network dot: green when a WiFi interface is up, red otherwise. */
-    ui_round_rect(renderer, (SDL_Rect){x - 8, y + 3, 8, 8}, 4,
-                  network_up ? COLOR_OK : COLOR_WARN);
+    /* WiFi signal: 1..4 bars from RSSI, red cross when the link is down. */
+    if (!network_up) {
+        ui_text(renderer, "x", x - 6, y - 1, 13, COLOR_WARN);
+        x -= 10;
+    } else if (wifi_dbm < 0) {
+        int bars = wifi_dbm >= -50 ? 4 : wifi_dbm >= -60 ? 3
+                 : wifi_dbm >= -70 ? 2 : wifi_dbm >= -80 ? 1 : 1;
+        for (int i = 0; i < 4; ++i) {
+            int bar_height = 4 + i * 3;
+            SDL_Color color = i < bars ? COLOR_OK : (SDL_Color){70, 80, 95, 255};
+            ui_fill(renderer,
+                    (SDL_Rect){x - 14 + i * 4, y + 11 - bar_height, 3, bar_height},
+                    color);
+        }
+        x -= 20;
+    } else {
+        /* Network is up but RSSI unknown: keep the plain dot. */
+        ui_round_rect(renderer, (SDL_Rect){x - 8, y + 3, 8, 8}, 4, COLOR_OK);
+    }
 }

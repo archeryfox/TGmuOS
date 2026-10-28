@@ -2,6 +2,7 @@
 #include "app.h"
 #include "images.h"
 #include "preferences.h"
+#include "screen_profile.h"
 #include "telegram.h"
 #include "ui.h"
 
@@ -10,6 +11,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Keyboard geometry: the panel is anchored to the bottom of the screen so
+ * it no longer floats over the message area. */
+#define KEYBOARD_KEY_HEIGHT 22
+#define KEYBOARD_ROW_STEP 24
+#define KEYBOARD_TOP 336
+#define INPUT_FIELD_HEIGHT 34
 
 /* QWERTY rows; letter keys are smaller than the service keys. */
 static const char* const ENGLISH_ROWS[3][10] = {
@@ -297,8 +305,13 @@ static void chat_handle(Screen* self, const SDL_Event* event) {
             break;
         case SDLK_y:
             if (event->key.keysym.scancode == SDL_SCANCODE_UNKNOWN) {
-                if (screen->symbols) screen->symbols = 0;
-                else screen->uppercase = !screen->uppercase;
+                if (screen->keyboard_visible) {
+                    if (screen->symbols) screen->symbols = 0;
+                    else screen->uppercase = !screen->uppercase;
+                } else {
+                    tg_open_profile_for_selected_chat();
+                    app_set_screen(ScreenId_Profile);
+                }
             }
             break;
         case SDLK_t:
@@ -397,6 +410,9 @@ static int wrapped_line_count(const char* text, int max_width) {
 
 static int message_height(const TgMessage* message) {
     int height = 14;
+    if (message->sender_name[0] && !message->outgoing) {
+        height += 16; /* sender caption line in group chats */
+    }
     if (message->photo_file_id || message->photo_path[0]) {
         height += 12;
         if (message->photo_path[0] && images_available()) {
@@ -416,13 +432,16 @@ static int message_height(const TgMessage* message) {
         } else {
             height += 40;
         }
+    } else if (message->media_kind != TgMediaNone) {
+        height += 12 + 26; /* label line for media without a thumbnail */
     }
     if (message->text[0]) {
         int max_width = message->photo_file_id || message->photo_path[0]
             ? PHOTO_MAX_WIDTH : MESSAGE_MAX_TEXT_WIDTH;
         height += wrapped_line_count(message->text, max_width) *
                   MESSAGE_LINE_HEIGHT + 4;
-    } else if (!message->photo_file_id && !message->photo_path[0]) {
+    } else if (!message->photo_file_id && !message->photo_path[0] &&
+               message->media_kind == TgMediaNone) {
         height += MESSAGE_LINE_HEIGHT;
     }
     return height;
@@ -440,7 +459,7 @@ static int chat_content_height(void) {
 
 static int chat_max_scroll(const ScreenChat* screen) {
     int max = chat_content_height() -
-              ((screen->keyboard_visible ? 205 : 380) - 72);
+              ((screen->keyboard_visible ? 286 : 380) - 72);
     return max > 0 ? max : 0;
 }
 
@@ -543,6 +562,19 @@ static int draw_wrapped_text(AppRenderer* renderer, const char* text,
     return lines;
 }
 
+static const char* media_kind_label(int kind) {
+    switch (kind) {
+        case TgMediaPhoto: return tr("Photo", "Фото");
+        case TgMediaVideo: return tr("Video", "Видео");
+        case TgMediaAnimation: return "GIF";
+        case TgMediaAudio: return tr("Audio", "Аудио");
+        case TgMediaDocument: return tr("File", "Файл");
+        case TgMediaVoice: return tr("Voice message", "Голосовое сообщение");
+        case TgMediaVideoNote: return tr("Video message", "Видеосообщение");
+        default: return tr("Attachment", "Вложение");
+    }
+}
+
 static void chat_render(Screen* self, AppRenderer* renderer) {
     ScreenChat* screen = (ScreenChat*)self;
     ui_fill(renderer, (SDL_Rect){0, 0, 640, 480}, COLOR_BG);
@@ -560,7 +592,7 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
     ui_text(renderer, tr("TELEGRAM", "ТЕЛЕГРАМ"), 60, 31, 14, COLOR_MUTED);
 
     int message_count = tg_message_count();
-    int viewport_bottom = screen->keyboard_visible ? 205 : 380;
+    int viewport_bottom = screen->keyboard_visible ? 286 : 380;
     int content_y = 72 - (int)screen->scroll_position;
     for (int i = 0; i < message_count; ++i) {
         const TgMessage* message = tg_message_at(i);
@@ -594,23 +626,47 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
                 width = MESSAGE_MAX_TEXT_WIDTH + 22;
             }
             if (width < 60) width = 60;
+            if (width > 616) width = 616;
             int x = message->outgoing ? 620 - width : 18;
             ui_round_rect(renderer, (SDL_Rect){x, content_y, width, height - 4}, 11,
                           message->outgoing ? COLOR_SELECTED : COLOR_PANEL);
             int inside_y = content_y + 7;
+            if (message->sender_name[0] && !message->outgoing) {
+                ui_text(renderer, message->sender_name, x + 10, inside_y, 12,
+                        COLOR_BLUE);
+                inside_y += 16;
+            }
             if (has_photo) {
                 if (photo) {
                     ui_blit_surface(renderer, photo, x + 11, inside_y,
                                     image_width, image_height);
                     inside_y += image_height + 5;
                 } else {
-                    const char* waiting = tr("Loading photo…", "Загрузка фото…");
-                    int label_width = ui_text_width(waiting, 14);
+                    /* Download in progress: label + live progress bar. */
+                    const char* label = message->media_kind == TgMediaPhoto
+                        ? tr("Loading photo…", "Загрузка фото…")
+                        : media_kind_label(message->media_kind);
+                    int label_width = ui_text_width(label, 13);
                     int label_x = x + (width - label_width) / 2;
                     if (label_x < x + 8) label_x = x + 8;
-                    ui_text(renderer, waiting, label_x, inside_y + 12, 14, COLOR_MUTED);
+                    ui_text(renderer, label, label_x, inside_y + 6, 13, COLOR_MUTED);
+                    double fraction = 0;
+                    if (message->media_expected > 0) {
+                        fraction = (double)message->media_downloaded /
+                                   (double)message->media_expected;
+                    }
+                    ui_progress(renderer,
+                                (SDL_Rect){x + 11, inside_y + 24, width - 22, 7},
+                                fraction, COLOR_BLUE, COLOR_HEADER);
                     inside_y += 40;
                 }
+            } else if (message->media_kind != TgMediaNone) {
+                const char* label = media_kind_label(message->media_kind);
+                int label_width = ui_text_width(label, 13);
+                int label_x = x + (width - label_width) / 2;
+                if (label_x < x + 8) label_x = x + 8;
+                ui_text(renderer, label, label_x, inside_y + 4, 13, COLOR_MUTED);
+                inside_y += 26;
             }
             if (message->text[0]) {
                 draw_wrapped_text(renderer, message->text, x + 10, inside_y,
@@ -620,17 +676,37 @@ static void chat_render(Screen* self, AppRenderer* renderer) {
         content_y += height;
     }
     if (message_count == 0) {
-        ui_text(renderer, tr("No messages yet", "Сообщений пока нет"), 22, 100, 14, COLOR_MUTED);
+        if (tg_state() == TgStateReady) {
+            ui_text(renderer, tr("Loading messages…", "Загрузка сообщений…"),
+                    22, 100, 15, COLOR_MUTED);
+            ui_spinner(renderer, 320, 150, 12, SDL_GetTicks());
+        } else {
+            ui_text(renderer, tr("No messages yet", "Сообщений пока нет"),
+                    22, 100, 14, COLOR_MUTED);
+        }
     }
     if (tg_last_error()[0]) {
         ui_text(renderer, tg_last_error(), 18, 207, 12, (SDL_Color){255, 204, 105, 255});
     }
 
-    int input_y = screen->keyboard_visible ? 218 : 396;
-    ui_round_rect(renderer, (SDL_Rect){12, input_y, 616, 38}, 10, COLOR_PANEL);
-    ui_text(renderer, screen->draft_length ? screen->draft :
-            tr("Write a message", "Введите сообщение"),
-            22, input_y + 10, 14, screen->draft_length ? COLOR_TEXT : COLOR_MUTED);
+    int input_y = screen->keyboard_visible ? 296 : 396;
+    ui_round_rect(renderer, (SDL_Rect){12, input_y, 616, INPUT_FIELD_HEIGHT}, 10, COLOR_PANEL);
+    /* Keep the draft on one line: measure a fitting prefix. */
+    if (screen->draft_length) {
+        char fitted[96];
+        size_t length = strlen(screen->draft);
+        if (length >= sizeof(fitted)) length = sizeof(fitted) - 1;
+        while (length > 0) {
+            memcpy(fitted, screen->draft, length);
+            fitted[length] = '\0';
+            if (ui_text_width(fitted, 14) <= 596) break;
+            --length;
+        }
+        ui_text(renderer, fitted, 22, input_y + 9, 14, COLOR_TEXT);
+    } else {
+        ui_text(renderer, tr("Write a message", "Введите сообщение"),
+                22, input_y + 9, 14, COLOR_MUTED);
+    }
 
     if (screen->keyboard_visible) {
         if (screen->selected_key >= key_count_for(screen)) screen->selected_key = 0;

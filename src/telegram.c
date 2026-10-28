@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include "telegram.h"
+#include "log.h"
 #include "preferences.h"
 #include "qr.h"
 
@@ -80,6 +81,24 @@ static struct {
     int chat_count;
     TgMessage messages[TG_MAX_MESSAGES];
     int message_count;
+    TgUser users[64];
+    int user_count;
+    int64_t me_id;
+    struct {
+        int is_user;
+        int64_t user_id;
+        int64_t chat_id;
+        int64_t group_id;
+        int member_count;
+        char description[512];
+        int description_pending;
+    } profile;
+    struct {
+        int last_ms;
+        uint32_t last_sent_ms;
+        uint32_t last_result_ms;
+    } proxy_ping;
+    int chats_exhausted;
     struct {
         int id;
         char title[64];
@@ -88,6 +107,7 @@ static struct {
     int current_folder;
     uint32_t last_photo_request_ms;
     uint32_t last_chat_refresh_ms;
+    uint32_t last_exhausted_retry_ms;
     int close_intent; /* 0 none, 1 archive cache, 2 restore saved account */
     int me_photo_file_id;
     int me_photo_pending;
@@ -99,6 +119,8 @@ static JsonToken json_tokens[JSON_TOKEN_LIMIT];
 static int json_token_count;
 static int json_position;
 static int next_request_id = 1;
+static void send_request(const char* request);
+static void ping_enabled_proxy(void);
 static struct {
     char id[32];
     char method[64];
@@ -115,7 +137,7 @@ static void set_error(const char* message) {
     snprintf(client.error, sizeof(client.error), "%s", message);
     snprintf(client.status, sizeof(client.status), "Telegram client error");
     client.state = TgStateError;
-    fprintf(stderr, "TDLib: %s\n", message);
+    log_error("tg", "%s", message);
 }
 
 static void set_status(TgState state, const char* status, const char* prompt) {
@@ -348,6 +370,140 @@ static int base64_encode(const unsigned char* input, size_t length,
     return 1;
 }
 
+/* ---- user cache ---------------------------------------------------- */
+
+static int user_find(int64_t id) {
+    for (int i = 0; i < client.user_count; ++i) {
+        if (client.users[i].id == id) return i;
+    }
+    return -1;
+}
+
+static int user_ensure(int64_t id) {
+    int index = user_find(id);
+    if (index >= 0) return index;
+    if (client.user_count >= (int)(sizeof(client.users) / sizeof(client.users[0]))) {
+        return -1;
+    }
+    index = client.user_count++;
+    memset(&client.users[index], 0, sizeof(client.users[index]));
+    client.users[index].id = id;
+    return index;
+}
+
+static void request_download(int file_id, int priority) {
+    if (!file_id) return;
+    char request[160];
+    snprintf(request, sizeof(request),
+             "{\"@type\":\"downloadFile\",\"file_id\":%d,"
+             "\"priority\":%d,\"offset\":0,\"limit\":0,\"synchronous\":false}",
+             file_id, priority);
+    send_request(request);
+}
+
+static void request_user(int64_t user_id) {
+    if (!user_id) return;
+    int index = user_find(user_id);
+    if (index >= 0 && client.users[index].has_info) return;
+    char request[128];
+    snprintf(request, sizeof(request),
+             "{\"@type\":\"getUser\",\"user_id\":%lld,\"@extra\":\"user-%lld\"}",
+             (long long)user_id, (long long)user_id);
+    send_request(request);
+}
+
+/* Fill/update a user cache entry from a TDLib user object. Requests the
+ * profile photo download when a photo is present. */
+static void user_update(int user) {
+    if (user < 0) return;
+    int64_t id = token_integer(json_member(user, "id"));
+    int index = user_ensure(id);
+    if (index < 0) return;
+    TgUser* entry = &client.users[index];
+    token_string(json_member(user, "first_name"), entry->first_name,
+                 sizeof(entry->first_name));
+    token_string(json_member(user, "last_name"), entry->last_name,
+                 sizeof(entry->last_name));
+    token_string(json_member(user, "username"), entry->username,
+                 sizeof(entry->username));
+    token_string(json_member(user, "phone_number"), entry->phone,
+                 sizeof(entry->phone));
+    int status = json_member(user, "status");
+    char status_name[40];
+    token_string(json_member(status, "@type"), status_name, sizeof(status_name));
+    if (strcmp(status_name, "userStatusOnline") == 0) {
+        snprintf(entry->status, sizeof(entry->status), "%s", "online");
+    } else if (strcmp(status_name, "userStatusOffline") == 0) {
+        int64_t was = token_integer(json_member(status, "was_online"));
+        time_t seen = (time_t)was;
+        struct tm* tm = localtime(&seen);
+        if (tm) {
+            snprintf(entry->status, sizeof(entry->status), "seen %02d:%02d",
+                     tm->tm_hour, tm->tm_min);
+        } else {
+            snprintf(entry->status, sizeof(entry->status), "%s", "offline");
+        }
+    } else if (strcmp(status_name, "userStatusRecently") == 0) {
+        snprintf(entry->status, sizeof(entry->status), "%s", "recently");
+    } else if (status_name[0]) {
+        snprintf(entry->status, sizeof(entry->status), "%.31s", status_name + 9);
+    }
+    entry->has_info = 1;
+    int photo = json_member(user, "photo");
+    if (photo >= 0) {
+        int big = json_member(photo, "big");
+        int small = json_member(photo, "small");
+        int file_id = (int)token_integer(json_member(big, "id"));
+        if (!file_id) file_id = (int)token_integer(json_member(small, "id"));
+        if (file_id && entry->photo_file_id != file_id && !entry->photo_pending &&
+                !entry->photo_path[0]) {
+            request_download(file_id, 16);
+            entry->photo_file_id = file_id;
+            entry->photo_pending = 1;
+        }
+    }
+}
+
+static void user_display_name(int index, char* output, size_t capacity) {
+    output[0] = '\0';
+    if (index < 0 || index >= client.user_count) return;
+    const TgUser* user = &client.users[index];
+    snprintf(output, capacity, "%s%s%s", user->first_name,
+             user->last_name[0] ? " " : "", user->last_name);
+    if (!output[0] && user->username[0]) {
+        snprintf(output, capacity, "@%s", user->username);
+    }
+    if (!output[0]) snprintf(output, capacity, "user %lld", (long long)user->id);
+}
+
+/* Resolve the sender display name for a message; queues a getUser request
+ * when the sender is not cached yet. */
+static void resolve_sender(TgMessage* message) {
+    message->sender_name[0] = '\0';
+    if (!message->sender_user_id) return;
+    int index = user_find(message->sender_user_id);
+    if (index >= 0 && client.users[index].has_info) {
+        user_display_name(index, message->sender_name,
+                          sizeof(message->sender_name));
+        return;
+    }
+    request_user(message->sender_user_id);
+}
+
+/* After a user cache update, refresh sender names on loaded messages. */
+static void refresh_message_senders(int64_t user_id) {
+    int index = user_find(user_id);
+    if (index < 0 || !client.users[index].has_info) return;
+    char name[96];
+    user_display_name(index, name, sizeof(name));
+    for (int i = 0; i < client.message_count; ++i) {
+        if (client.messages[i].sender_user_id == user_id) {
+            snprintf(client.messages[i].sender_name,
+                     sizeof(client.messages[i].sender_name), "%s", name);
+        }
+    }
+}
+
 static void send_request(const char* request) {
     if (!client.send || client.client_id <= 0 || !request) return;
     const char* method_start = strstr(request, "\"@type\":\"");
@@ -415,8 +571,7 @@ static int prepare_proxy(void) {
     const char* username = preferences_proxy_username();
     const char* password = preferences_proxy_password();
     int port = preferences_proxy_port();
-    fprintf(stderr, "TDLib: prepare_proxy server=%s port=%d username=%s\n",
-            server, port, username);
+    log_info("proxy", "SOCKS5 %s:%d user=%s", server, port, username);
     if (!server[0] || port < 1 || port > 65535 ||
         strlen(server) >= sizeof(client.proxy_server) ||
         strlen(username) >= sizeof(client.proxy_username) ||
@@ -556,8 +711,8 @@ static void add_mtproto_proxies(void) {
                  escaped_server, item->port, enable ? "true" : "false",
                  escaped_secret);
         send_request(request);
-        fprintf(stderr, "TDLib: MTProto proxy added: %s (%s:%d) enable=%d\n",
-                item->name, item->server, item->port, enable);
+        log_info("proxy", "MTProto added: %s (%s:%d) enable=%d",
+                 item->name, item->server, item->port, enable);
     }
 }
 
@@ -828,6 +983,17 @@ int tg_has_saved_account(void) {
 }
 
 static void request_chats(void) {
+    if (client.chats_exhausted) {
+        /* The list is drained; poll again only once a minute so newly added
+         * chats still appear without spamming TDLib (loadChats answers an
+         * exhausted list with 404 "Not Found"). */
+        uint32_t now = SDL_GetTicks();
+        if (client.last_exhausted_retry_ms &&
+                now - client.last_exhausted_retry_ms < 60000) {
+            return;
+        }
+        client.last_exhausted_retry_ms = now;
+    }
     char request[160];
     if (client.current_folder > 0 &&
             client.current_folder <= client.folder_count) {
@@ -917,11 +1083,69 @@ static void extract_photo(int content, TgMessage* message) {
     int file_id = (int)token_integer(json_member(file, "id"));
     if (!file_id) return;
     message->photo_file_id = file_id;
+    message->media_expected = (long)token_integer(json_member(file, "expected_size"));
     int local = json_member(file, "local");
     int completed = json_member(local, "is_download_completed");
     if (completed >= 0 && json_source[json_tokens[completed].start] == 't') {
         token_string(json_member(local, "path"), message->photo_path,
                      sizeof(message->photo_path));
+    }
+}
+
+/* Generic media: remember the playable/file content plus its thumbnail so
+ * the UI can show a preview and a download progress bar. */
+static void extract_media_file(int content, TgMessage* message,
+                               const char* wrapper, TgMediaKind kind,
+                               const char* thumb_field, const char* label) {
+    int wrapped = json_member(content, wrapper);
+    if (wrapped < 0) return;
+    int file = json_member(wrapped, wrapper);
+    message->media_file_id = (int)token_integer(json_member(file, "id"));
+    message->media_expected = (long)token_integer(json_member(file, "expected_size"));
+    message->media_kind = kind;
+    if (label) snprintf(message->text, sizeof(message->text), "%s", label);
+    int thumb = thumb_field ? json_member(wrapped, thumb_field) : -1;
+    if (thumb >= 0) {
+        int thumb_file = json_member(thumb, "file");
+        int thumb_id = (int)token_integer(json_member(thumb_file, "id"));
+        if (thumb_id) {
+            message->photo_file_id = thumb_id;
+            int local = json_member(thumb_file, "local");
+            int completed = json_member(local, "is_download_completed");
+            if (completed >= 0 && json_source[json_tokens[completed].start] == 't') {
+                token_string(json_member(local, "path"), message->photo_path,
+                             sizeof(message->photo_path));
+            }
+        }
+    }
+}
+
+static void extract_media(int content, TgMessage* message) {
+    if (content < 0) return;
+    int type = json_member(content, "@type");
+    char name[40];
+    token_string(type, name, sizeof(name));
+    if (strcmp(name, "messagePhoto") == 0) {
+        message->media_kind = TgMediaPhoto;
+        extract_photo(content, message);
+    } else if (strcmp(name, "messageVideo") == 0) {
+        extract_media_file(content, message, "video", TgMediaVideo,
+                           "thumbnail", NULL);
+    } else if (strcmp(name, "messageAnimation") == 0) {
+        extract_media_file(content, message, "animation", TgMediaAnimation,
+                           "thumbnail", "GIF");
+    } else if (strcmp(name, "messageAudio") == 0) {
+        extract_media_file(content, message, "audio", TgMediaAudio,
+                           "album_cover_thumbnail", NULL);
+    } else if (strcmp(name, "messageDocument") == 0) {
+        extract_media_file(content, message, "document", TgMediaDocument,
+                           "thumbnail", NULL);
+    } else if (strcmp(name, "messageVoiceNote") == 0) {
+        extract_media_file(content, message, "voice_note", TgMediaVoice,
+                           NULL, "Voice message");
+    } else if (strcmp(name, "messageVideoNote") == 0) {
+        extract_media_file(content, message, "video_note", TgMediaVideoNote,
+                           "thumbnail", "Video message");
     }
 }
 
@@ -967,12 +1191,13 @@ static void send_tdlib_parameters(void) {
                  encoded_database_key, client.api_id, client.api_hash,
                  preferences_is_russian() ? "ru" : "en");
     }
-    fprintf(stderr, "TDLib: sending setTdlibParameters using %s JSON schema\n",
-            client.tdlib_parameters_nested ? "legacy nested" : "flat");
+    log_info("tg", "setTdlibParameters (%s schema)",
+             client.tdlib_parameters_nested ? "legacy nested" : "flat");
     send_request(request);
 }
 
 static void handle_authorization(const char* state) {
+    log_info("tg", "authorization: %s", state);
     client.pending_auth_state = TgStateUnavailable;
     client.error[0] = '\0';
     client.qr_request_pending = 0;
@@ -993,7 +1218,7 @@ static void handle_authorization(const char* state) {
                  encoded_database_key);
         send_request(request);
         set_status(TgStateInitializing, "Initializing Telegram database…", "");
-        fprintf(stderr, "TDLib: sent checkDatabaseEncryptionKey\n");
+        log_info("tg", "checkDatabaseEncryptionKey sent");
     } else if (strcmp(state, "authorizationStateWaitPhoneNumber") == 0) {
         set_status(TgStatePhone, "Sign in to Telegram", "Enter your phone number");
     } else if (strcmp(state, "authorizationStateWaitCode") == 0) {
@@ -1011,6 +1236,9 @@ static void handle_authorization(const char* state) {
         }
     } else if (strcmp(state, "authorizationStateReady") == 0) {
         set_status(TgStateReady, "Connected to Telegram", "");
+        send_request("{\"@type\":\"getMe\"}");
+        client.chats_exhausted = 0;
+        client.last_exhausted_retry_ms = 0;
         if (!client.requested_chats) request_chats();
     } else if (strcmp(state, "authorizationStateLoggingOut") == 0) {
         set_status(TgStateInitializing, "Signing out…", "");
@@ -1052,6 +1280,34 @@ static void handle_authorization(const char* state) {
 static void update_chat(int object) {
     int64_t id = token_integer(json_member(object, "id"));
     if (!id) return;
+    /* Folder views only list chats that belong to the active folder. */
+    if (client.current_folder > 0 && client.current_folder <= client.folder_count) {
+        int wanted = client.folders[client.current_folder - 1].id;
+        int member = 0;
+        int lists = json_member(object, "chat_lists");
+        for (int i = 0; i < json_array_size(lists); ++i) {
+            int list = json_array_item(lists, i);
+            char list_name[32];
+            token_string(json_member(list, "@type"), list_name, sizeof(list_name));
+            if (strcmp(list_name, "chatListFolder") == 0 &&
+                    (int)token_integer(json_member(list, "chat_folder_id")) == wanted) {
+                member = 1;
+                break;
+            }
+        }
+        if (!member) {
+            /* Drop stale entries when the user switches folders. */
+            for (int i = 0; i < client.chat_count; ++i) {
+                if (client.chats[i].id == id) {
+                    memmove(client.chats + i, client.chats + i + 1,
+                            sizeof(client.chats[0]) * (size_t)(client.chat_count - i - 1));
+                    --client.chat_count;
+                    break;
+                }
+            }
+            return;
+        }
+    }
     int index = 0;
     while (index < client.chat_count && client.chats[index].id != id) ++index;
     if (index == client.chat_count) {
@@ -1085,6 +1341,26 @@ static void update_chat(int object) {
             break;
         }
     }
+    chat->type = TgChatUnknown;
+    chat->user_id = 0;
+    chat->group_id = 0;
+    int chat_type = json_member(object, "type");
+    char type_name[40];
+    token_string(json_member(chat_type, "@type"), type_name, sizeof(type_name));
+    if (strcmp(type_name, "chatTypePrivate") == 0 ||
+            strcmp(type_name, "chatTypeSecret") == 0) {
+        chat->type = TgChatPrivate;
+        chat->user_id = token_integer(json_member(chat_type, "user_id"));
+        request_user(chat->user_id);
+    } else if (strcmp(type_name, "chatTypeBasicGroup") == 0) {
+        chat->type = TgChatBasicGroup;
+        chat->group_id = token_integer(json_member(chat_type, "basic_group_id"));
+    } else if (strcmp(type_name, "chatTypeSupergroup") == 0) {
+        chat->group_id = token_integer(json_member(chat_type, "supergroup_id"));
+        int is_channel = json_member(chat_type, "is_channel");
+        chat->type = is_channel >= 0 && json_source[json_tokens[is_channel].start] == 't'
+            ? TgChatChannel : TgChatSupergroup;
+    }
     token_string(json_member(object, "title"), chat->title, sizeof(chat->title));
     extract_content_text(json_member(json_member(object, "last_message"), "content"),
                          chat->preview, sizeof(chat->preview));
@@ -1094,12 +1370,7 @@ static void update_chat(int object) {
         int small = json_member(photo, "small");
         int file_id = (int)token_integer(json_member(small, "id"));
         if (file_id && !chat->photo_pending) {
-            char request[160];
-            snprintf(request, sizeof(request),
-                     "{\"@type\":\"downloadFile\",\"file_id\":%d,"
-                     "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
-                     file_id);
-            send_request(request);
+            request_download(file_id, 16);
             chat->photo_file_id = file_id;
             chat->photo_pending = 1;
         }
@@ -1107,8 +1378,13 @@ static void update_chat(int object) {
 }
 
 static void reset_message_media(TgMessage* message) {
+    message->media_kind = TgMediaNone;
     message->photo_file_id = 0;
+    message->media_file_id = 0;
     message->photo_pending = 0;
+    message->media_pending = 0;
+    message->media_downloaded = 0;
+    message->media_expected = 0;
     message->photo_path[0] = '\0';
 }
 
@@ -1118,9 +1394,17 @@ static void fill_message(TgMessage* message, int object) {
     int outgoing = json_member(object, "is_outgoing");
     message->outgoing = outgoing >= 0 &&
                         json_source[json_tokens[outgoing].start] == 't';
+    int sender = json_member(object, "sender_id");
+    char sender_type[40];
+    token_string(json_member(sender, "@type"), sender_type, sizeof(sender_type));
+    message->sender_user_id = 0;
+    if (strcmp(sender_type, "messageSenderUser") == 0) {
+        message->sender_user_id = token_integer(json_member(sender, "user_id"));
+    }
     int content = json_member(object, "content");
     extract_content_text(content, message->text, sizeof(message->text));
-    extract_photo(content, message);
+    extract_media(content, message);
+    resolve_sender(message);
 }
 
 static void update_message(int object) {
@@ -1183,8 +1467,11 @@ static void handle_response(const char* response) {
                 break;
             }
         }
-        fprintf(stderr, "TDLib: getProxies response, found proxy_id=%d\n", proxy_id);
+        log_info("proxy", "getProxies -> proxy_id=%d", proxy_id);
         configure_proxy(proxy_id);
+    } else if (strcmp(type_name, "proxies") == 0) {
+        /* getProxies from the connectivity probe: ping the enabled proxy. */
+        ping_enabled_proxy();
     } else if (strcmp(type_name, "proxy") == 0 ||
                strcmp(type_name, "ok") == 0) {
         int extra = json_member(0, "@extra");
@@ -1198,7 +1485,7 @@ static void handle_response(const char* response) {
                 snprintf(client.status, sizeof(client.status),
                          "Telegram proxy updated");
             }
-            fprintf(stderr, "TDLib: proxy request succeeded\n");
+            log_info("proxy", "proxy request succeeded");
         }
         if (client.awaiting_initial_proxy && proxy_request) {
             client.awaiting_initial_proxy = 0;
@@ -1220,38 +1507,54 @@ static void handle_response(const char* response) {
         update_message(json_member(0, "message"));
     } else if (strcmp(type_name, "updateUser") == 0) {
         int user = json_member(0, "user");
-        int photo = json_member(user, "photo");
-        if (photo >= 0) {
-            int small = json_member(photo, "small");
-            int file_id = (int)token_integer(json_member(small, "id"));
-            if (file_id && !client.me_photo_pending) {
-                char request[160];
-                snprintf(request, sizeof(request),
-                         "{\"@type\":\"downloadFile\",\"file_id\":%d,"
-                         "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
-                         file_id);
-                send_request(request);
-                client.me_photo_file_id = file_id;
-                client.me_photo_pending = 1;
-            }
+        user_update(user);
+        int64_t user_id = token_integer(json_member(user, "id"));
+        refresh_message_senders(user_id);
+        if (user_id && user_id == client.me_id) {
+            client.me_photo_pending = 0;
         }
     } else if (strcmp(type_name, "updateUserPhoto") == 0) {
         int user = json_member(0, "user");
-        int photo = json_member(user, "photo");
-        if (photo >= 0) {
-            int small = json_member(photo, "small");
-            int file_id = (int)token_integer(json_member(small, "id"));
-            if (file_id && !client.me_photo_pending) {
-                char request[160];
-                snprintf(request, sizeof(request),
-                         "{\"@type\":\"downloadFile\",\"file_id\":%d,"
-                         "\"priority\":16,\"offset\":0,\"limit\":0,\"synchronous\":false}",
-                         file_id);
-                send_request(request);
-                client.me_photo_file_id = file_id;
-                client.me_photo_pending = 1;
-            }
+        user_update(user);
+        int64_t user_id = token_integer(json_member(user, "id"));
+        refresh_message_senders(user_id);
+        if (user_id && user_id == client.me_id) {
+            client.me_photo_pending = 0;
         }
+    } else if (strcmp(type_name, "user") == 0 &&
+               request_method &&
+               (strcmp(request_method, "getUser") == 0 ||
+                strcmp(request_method, "getMe") == 0)) {
+        /* Response to our getUser cache fill (root object is the user). */
+        user_update(0);
+        int64_t user_id = token_integer(json_member(0, "id"));
+        if (strcmp(request_method, "getMe") == 0 && user_id) {
+            client.me_id = user_id;
+            log_info("tg", "getMe -> id %lld", (long long)user_id);
+        }
+        refresh_message_senders(user_id);
+    } else if (strcmp(type_name, "supergroupFullInfo") == 0 &&
+               client.profile.group_id) {
+        client.profile.member_count =
+            (int)token_integer(json_member(0, "member_count"));
+        token_string(json_member(0, "description"), client.profile.description,
+                     sizeof(client.profile.description));
+        client.profile.description_pending = 0;
+        log_info("tg", "supergroup full info: %d members",
+                 client.profile.member_count);
+    } else if (strcmp(type_name, "basicGroupFullInfo") == 0 &&
+               client.profile.group_id) {
+        client.profile.member_count =
+            (int)token_integer(json_member(0, "member_count"));
+        token_string(json_member(0, "description"), client.profile.description,
+                     sizeof(client.profile.description));
+        client.profile.description_pending = 0;
+    } else if (strcmp(type_name, "seconds") == 0 &&
+               request_method && strcmp(request_method, "pingProxy") == 0) {
+        double seconds = strtod(json_source + json_tokens[json_member(0, "seconds")].start, NULL);
+        client.proxy_ping.last_ms = (int)(seconds * 1000.0);
+        client.proxy_ping.last_result_ms = SDL_GetTicks();
+        log_info("tg", "pingProxy %d ms", client.proxy_ping.last_ms);
     } else if (strcmp(type_name, "chats") == 0) {
         int chats = json_member(0, "chat_ids");
         int count = json_array_size(chats);
@@ -1317,7 +1620,9 @@ static void handle_response(const char* response) {
         if (client.current_folder > client.folder_count) {
             client.current_folder = 0;
         }
-        fprintf(stderr, "TDLib: chat folders updated: %d\n", client.folder_count);
+        log_info("tg", "chat folders updated: %d", client.folder_count);
+        client.chats_exhausted = 0;
+        if (client.state == TgStateReady) request_chats();
     } else if (strcmp(type_name, "updateFile") == 0) {
         int file = json_member(0, "file");
         int file_id = (int)token_integer(json_member(file, "id"));
@@ -1326,13 +1631,30 @@ static void handle_response(const char* response) {
             int completed = json_member(local, "is_download_completed");
             int done = completed >= 0 &&
                        json_source[json_tokens[completed].start] == 't';
+            long downloaded =
+                (long)token_integer(json_member(local, "downloaded_size"));
+            long expected =
+                (long)token_integer(json_member(file, "expected_size"));
             for (int i = 0; i < client.message_count; ++i) {
                 if (client.messages[i].photo_file_id == file_id) {
                     client.messages[i].photo_pending = 0;
+                    client.messages[i].media_downloaded = downloaded;
+                    client.messages[i].media_expected = expected;
                     if (done) {
                         token_string(json_member(local, "path"),
                                      client.messages[i].photo_path,
                                      sizeof(client.messages[i].photo_path));
+                        log_info("tg", "photo %d ready (%ld bytes)",
+                                 file_id, downloaded);
+                    }
+                }
+                if (client.messages[i].media_file_id == file_id) {
+                    client.messages[i].media_pending = done ? 0 : 1;
+                    client.messages[i].media_downloaded = downloaded;
+                    client.messages[i].media_expected = expected;
+                    if (done) {
+                        log_info("tg", "media file %d ready (%ld/%ld)",
+                                 file_id, downloaded, expected);
                     }
                 }
             }
@@ -1343,6 +1665,16 @@ static void handle_response(const char* response) {
                         token_string(json_member(local, "path"),
                                      client.chats[i].photo_path,
                                      sizeof(client.chats[i].photo_path));
+                    }
+                }
+            }
+            for (int i = 0; i < client.user_count; ++i) {
+                if (client.users[i].photo_file_id == file_id) {
+                    client.users[i].photo_pending = 0;
+                    if (done) {
+                        token_string(json_member(local, "path"),
+                                     client.users[i].photo_path,
+                                     sizeof(client.users[i].photo_path));
                     }
                 }
             }
@@ -1369,10 +1701,21 @@ static void handle_response(const char* response) {
             send_tdlib_parameters();
             return;
         }
+        /* TDLib answers an exhausted chat list with 404 "Not Found"; that is
+         * not an error — just stop asking until a refresh is due. */
+        if (code == 404 && request_method &&
+                strcmp(request_method, "loadChats") == 0) {
+            if (!client.chats_exhausted) {
+                log_info("tg", "chat list exhausted (folder %d)",
+                         client.current_folder);
+            }
+            client.chats_exhausted = 1;
+            return;
+        }
         if (client.proxy_setup_pending || client.proxy_apply_pending ||
             client.awaiting_initial_proxy) {
-            fprintf(stderr, "TDLib proxy request %s failed: %d: %s\n",
-                    request_method ? request_method : "unknown", code, message);
+            log_error("proxy", "request %s failed: %d: %s",
+                      request_method ? request_method : "unknown", code, message);
             client.proxy_setup_pending = 0;
             client.proxy_apply_pending = 0;
             client.awaiting_initial_proxy = 0;
@@ -1389,7 +1732,7 @@ static void handle_response(const char* response) {
         }
         if (client.qr_request_pending) {
             snprintf(client.error, sizeof(client.error), "%d: %.240s", code, message);
-            fprintf(stderr, "TDLib QR request error: %s\n", client.error);
+            log_error("tg", "QR request error: %s", client.error);
             client.qr_request_pending = 0;
             set_status(client.qr_return_state, client.qr_return_status,
                        client.qr_return_prompt);
@@ -1426,7 +1769,7 @@ static void handle_response(const char* response) {
     }
 }
 
-/* Request downloads for photos in the visible tail of the history,
+/* Request downloads for photos/media in the visible tail of the history,
  * throttled so the chat history keeps priority over media. */
 static void pump_photo_downloads(void) {
     if (!client.running || client.state != TgStateReady) return;
@@ -1440,16 +1783,53 @@ static void pump_photo_downloads(void) {
         TgMessage* message = &client.messages[i];
         if (message->photo_file_id && !message->photo_path[0] &&
                 !message->photo_pending) {
-            char request[160];
-            snprintf(request, sizeof(request),
-                     "{\"@type\":\"downloadFile\",\"file_id\":%d,"
-                     "\"priority\":24,\"offset\":0,\"limit\":0,"
-                     "\"synchronous\":false}",
-                     message->photo_file_id);
-            send_request(request);
+            request_download(message->photo_file_id, 24);
             message->photo_pending = 1;
             client.last_photo_request_ms = now;
-            break;
+            return;
+        }
+    }
+    for (int i = client.message_count - 1; i >= start; --i) {
+        TgMessage* message = &client.messages[i];
+        if (message->media_file_id && !message->media_pending &&
+                message->media_downloaded < message->media_expected) {
+            request_download(message->media_file_id, 20);
+            message->media_pending = 1;
+            client.last_photo_request_ms = now;
+            return;
+        }
+    }
+}
+
+/* Probe the active proxy with pingProxy so the status bar can show real
+ * connectivity instead of just "enabled". */
+static void pump_proxy_ping(void) {
+    if (!client.running || client.state != TgStateReady) return;
+    if (!preferences_proxy_enabled()) return;
+    uint32_t now = SDL_GetTicks();
+    if (client.proxy_ping.last_sent_ms &&
+            now - client.proxy_ping.last_sent_ms < 15000) {
+        return;
+    }
+    client.proxy_ping.last_sent_ms = now;
+    send_request("{\"@type\":\"getProxies\"}");
+}
+
+/* Handle the getProxies answer for ping: find the enabled proxy and ping it. */
+static void ping_enabled_proxy(void) {
+    int proxies = json_member(0, "proxies");
+    for (int i = 0; i < json_array_size(proxies); ++i) {
+        int proxy = json_array_item(proxies, i);
+        int enabled = json_member(proxy, "is_enabled");
+        if (enabled >= 0 && json_source[json_tokens[enabled].start] == 't') {
+            int id = (int)token_integer(json_member(proxy, "id"));
+            if (id > 0) {
+                char request[96];
+                snprintf(request, sizeof(request),
+                         "{\"@type\":\"pingProxy\",\"proxy_id\":%d}", id);
+                send_request(request);
+            }
+            return;
         }
     }
 }
@@ -1477,6 +1857,7 @@ void tg_poll(void) {
     }
     pump_photo_downloads();
     pump_chat_refresh();
+    pump_proxy_ping();
 }
 
 void tg_stop(void) {
@@ -1710,6 +2091,8 @@ void tg_set_folder(int index) {
     client.selected_chat = 0;
     client.message_count = 0;
     client.older_history_exhausted = 0;
+    client.chats_exhausted = 0;
+    client.last_exhausted_retry_ms = 0;
     if (client.state == TgStateReady) request_chats();
 }
 
@@ -1893,4 +2276,115 @@ int tg_apply_subscription(int enabled) {
         return 0;
     }
     return 1;
+}
+
+
+/* ---- connectivity probe -------------------------------------------- */
+
+int tg_proxy_ping_ms(void) {
+    if (!client.proxy_ping.last_result_ms) return -1;
+    if (SDL_GetTicks() - client.proxy_ping.last_result_ms > 40000) return -1;
+    return client.proxy_ping.last_ms;
+}
+
+/* ---- own account ----------------------------------------------------- */
+
+int64_t tg_me_id(void) {
+    return client.me_id;
+}
+
+const char* tg_me_name(void) {
+    static char name[128];
+    name[0] = '\0';
+    int index = user_find(client.me_id);
+    if (index >= 0) user_display_name(index, name, sizeof(name));
+    if (!name[0]) snprintf(name, sizeof(name), "Telegram");
+    return name;
+}
+
+int tg_me_has_photo(void) {
+    int index = user_find(client.me_id);
+    return index >= 0 && client.users[index].photo_path[0];
+}
+
+const char* tg_me_photo_path(void) {
+    int index = user_find(client.me_id);
+    return index >= 0 ? client.users[index].photo_path : NULL;
+}
+
+/* ---- profile --------------------------------------------------------- */
+
+void tg_open_profile_for_chat(int index) {
+    const TgChat* chat = tg_chat_at(index);
+    if (!chat) return;
+    memset(&client.profile, 0, sizeof(client.profile));
+    client.profile.chat_id = chat->id;
+    if (chat->type == TgChatPrivate && chat->user_id) {
+        client.profile.is_user = 1;
+        client.profile.user_id = chat->user_id;
+        request_user(chat->user_id);
+        return;
+    }
+    client.profile.is_user = 0;
+    if ((chat->type == TgChatSupergroup || chat->type == TgChatChannel) &&
+            chat->group_id) {
+        client.profile.group_id = chat->group_id;
+        client.profile.description_pending = 1;
+        char request[128];
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"getSupergroupFullInfo\",\"supergroup_id\":%lld}",
+                 (long long)chat->group_id);
+        send_request(request);
+    } else if (chat->type == TgChatBasicGroup && chat->group_id) {
+        client.profile.group_id = chat->group_id;
+        client.profile.description_pending = 1;
+        char request[128];
+        snprintf(request, sizeof(request),
+                 "{\"@type\":\"getBasicGroupFullInfo\",\"basic_group_id\":%lld}",
+                 (long long)chat->group_id);
+        send_request(request);
+    }
+}
+
+void tg_open_profile_for_selected_chat(void) {
+    for (int i = 0; i < client.chat_count; ++i) {
+        if (client.chats[i].id == client.selected_chat) {
+            tg_open_profile_for_chat(i);
+            return;
+        }
+    }
+}
+
+void tg_open_own_profile(void) {
+    if (!client.me_id) return;
+    memset(&client.profile, 0, sizeof(client.profile));
+    client.profile.is_user = 1;
+    client.profile.user_id = client.me_id;
+    request_user(client.me_id);
+}
+
+int tg_profile_is_user(void) {
+    return client.profile.is_user;
+}
+
+int64_t tg_profile_user_id(void) {
+    return client.profile.user_id;
+}
+
+int64_t tg_profile_chat_id(void) {
+    return client.profile.chat_id;
+}
+
+const TgUser* tg_profile_user(void) {
+    if (!client.profile.is_user) return NULL;
+    int index = user_find(client.profile.user_id);
+    return index >= 0 ? &client.users[index] : NULL;
+}
+
+int tg_profile_member_count(void) {
+    return client.profile.member_count;
+}
+
+const char* tg_profile_description(void) {
+    return client.profile.description;
 }

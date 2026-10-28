@@ -1,6 +1,7 @@
 #include "screen_chats.h"
 #include "app.h"
 #include "preferences.h"
+#include "screen_profile.h"
 #include "statusbar.h"
 #include "telegram.h"
 #include "ui.h"
@@ -79,12 +80,19 @@ static void chats_handle(Screen* self, const SDL_Event* event) {
                 app_set_screen(ScreenId_Chat);
             }
             break;
+        case SDLK_y:
+            if (tg_chat_count() > screen->selected) {
+                tg_open_profile_for_chat(screen->selected);
+                app_set_screen(ScreenId_Profile);
+            }
+            break;
         case SDLK_BACKSPACE:
-            app_set_screen(ScreenId_Auth);
+            /* B is "back" on the console: there is nowhere to go back to on
+             * the main list, so it is a no-op here (it used to jump to the
+             * auth screen, which looked like "scrolling opens a profile"). */
             break;
         case SDLK_s:
         case SDLK_t:
-        case SDLK_y:
             app_set_screen(ScreenId_Settings);
             break;
         default:
@@ -143,13 +151,21 @@ for (int row = 0; row < VISIBLE_CHATS; ++row) {
     if (tg_chat_count() == 0) {
         ui_text(renderer, tr("Loading Telegram chats…", "Загрузка чатов Telegram…"),
                 28, 116, 18, COLOR_MUTED);
+        ui_spinner(renderer, 320, 168, 12, SDL_GetTicks());
+        if (tg_state() == TgStateReady) {
+            const char* hint = tr("Connected — waiting for the chat list",
+                                  "Подключено — ждём список чатов");
+            int hint_width = ui_text_width(hint, 13);
+            ui_text(renderer, hint, 320 - hint_width / 2, 196, 13, COLOR_MUTED);
+        }
     }
 
     ui_fill(renderer, (SDL_Rect){0, 430, 640, 50}, COLOR_HEADER);
     ui_text(renderer, tr("A: OPEN", "A: ОТКРЫТЬ"), 18, 446, 14, COLOR_TEXT);
-    ui_text(renderer, tr("LEFT/RIGHT: FOLDER", "ВЛЕВО/ВПРАВО: ПАПКА"), 156, 446, 14, COLOR_TEXT);
-    ui_text(renderer, tr("START: SETTINGS", "START: НАСТРОЙКИ"), 420, 446, 14, COLOR_TEXT);
-    ui_text(renderer, tr("B: BACK", "B: НАЗАД"), 556, 446, 14, COLOR_MUTED);
+    ui_text(renderer, tr("Y: PROFILE", "Y: ПРОФИЛЬ"), 132, 446, 14, COLOR_TEXT);
+    ui_text(renderer, tr("LEFT/RIGHT: FOLDER", "ВЛЕВО/ВПРАВО: ПАПКА"), 262, 446, 14, COLOR_TEXT);
+    ui_text(renderer, tr("START: SETTINGS", "START: НАСТРОЙКИ"), 476, 446, 14, COLOR_TEXT);
+    ui_text(renderer, tr("B: BACK", "B: НАЗАД"), 586, 446, 14, COLOR_MUTED);
 }
 
 static void chats_destroy(Screen* self) {

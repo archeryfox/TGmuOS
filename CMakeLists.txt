@@ -15,6 +15,7 @@ add_executable(tgmuos
     src/screen_chat.c
     src/screen_auth.c
     src/screen_settings.c
+    src/screen_profile.c
     src/input.c
     src/keyboard.c
     src/ui.c
@@ -24,6 +25,7 @@ add_executable(tgmuos
     src/preferences.c
     src/statusbar.c
     src/images.c
+    src/log.c
 )
 target_include_directories(tgmuos PRIVATE include ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
 target_link_libraries(tgmuos PRIVATE ${SDL2_TTF_LIBRARIES} ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS} m)

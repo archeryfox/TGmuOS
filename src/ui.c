@@ -337,3 +337,39 @@ void ui_blit_surface(AppRenderer* renderer, const SDL_Surface* surface,
     if (dest_height < 1) dest_height = 1;
     blit_rgba(renderer, surface, dest_x, dest_y, dest_width, dest_height);
 }
+
+
+/* Three orbiting dots; the leading dot is bright, the tail fades out. */
+void ui_spinner(AppRenderer* renderer, int x, int y, int radius, uint32_t phase_ms) {
+    static const SDL_Color COLOR_DOT = {120, 190, 250, 255};
+    if (radius < 4) radius = 4;
+    for (int i = 0; i < 3; ++i) {
+        /* One revolution per 900 ms; dots trail by 1/3 of a turn each. */
+        double angle = ((double)(phase_ms % 900) / 900.0) * 6.28318530718 -
+                       (double)i * 2.09439510239;
+        int cx = x + (int)(radius * 0.9 * cos(angle));
+        int cy = y + (int)(radius * 0.9 * sin(angle));
+        int fade = 255 - i * 80;
+        SDL_Color color = {COLOR_DOT.r, COLOR_DOT.g, COLOR_DOT.b, 255};
+        if (fade < 120) {
+            color.r = (Uint8)((COLOR_DOT.r * fade) / 255);
+            color.g = (Uint8)((COLOR_DOT.g * fade) / 255);
+            color.b = (Uint8)((COLOR_DOT.b * fade) / 255);
+        }
+        ui_round_rect(renderer, (SDL_Rect){cx - 2, cy - 2, 5, 5}, 2, color);
+    }
+}
+
+void ui_progress(AppRenderer* renderer, SDL_Rect rect, double fraction,
+                 SDL_Color fill, SDL_Color track) {
+    if (fraction < 0) fraction = 0;
+    if (fraction > 1) fraction = 1;
+    ui_round_rect(renderer, rect, rect.h / 2, track);
+    if (fraction > 0) {
+        int fill_width = (int)(rect.w * fraction);
+        if (fill_width < rect.h) fill_width = rect.h;
+        if (fill_width > rect.w) fill_width = rect.w;
+        ui_round_rect(renderer, (SDL_Rect){rect.x, rect.y, fill_width, rect.h},
+                      rect.h / 2, fill);
+    }
+}

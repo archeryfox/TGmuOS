@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#define CHAT_MESSAGE_LENGTH 96
+#define CHAT_MESSAGE_LENGTH 1024
 
 typedef struct {
     Screen base;
